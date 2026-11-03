@@ -174,10 +174,16 @@
 >   compare); branches are `master` and a Copilot-generated WIP updating the
 >   vendored copy to 1.23 — no original C++ fixes.
 >
-> **What was deliberately NOT searched:** upstream issues and discussions
-> (#195/#775 were used only as bug-report context, never mined for patches),
-> and other LevelDB implementations — RocksDB, goleveldb, Chromium's
-> `third_party/leveldatabase` — which appear above only as prior-art evidence
+> **Issues** (scan 2026-11-04): the highest-volume upstream issues — top 15 by
+> comments and top 15 by reactions, 27 unique — were reviewed for adoptable
+> solutions. None contains an unlanded code fix: #401 (too many open files)
+> was already fixed upstream (646c3588de84, present in this tree's base),
+> #783 (ldb files never deleted) and #182/#1082 (multi-process, read-only
+> mode) are design debates without a patch, #425 (createFilter segfault)
+> ended as an unresolved caller-lifetime diagnosis, and #1247 is a C++14
+> toolchain complaint. #195/#775 remain bug-report context only. Other
+> LevelDB implementations — RocksDB, goleveldb, Chromium's
+> `third_party/leveldatabase` — appear above only as prior-art evidence
 > in the downstream-workaround column, never as patch sources.
 >
 > **Who made this:** the entire tree was assembled by AI coding agents and has
