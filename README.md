@@ -51,6 +51,9 @@
 > | **Do not reuse a log that ends with an incomplete record** (platform-independent) | [PR #1336](https://github.com/google/leveldb/pull/1336) | open since 2026; data loss | none found; Chromium instead enables upstream's manifest-reuse feature |
 > | Handle short reads in `PosixRandomAccessFile::Read` (the POSIX-side twin of #1334) | [PR #1368](https://github.com/google/leveldb/pull/1368) | open since 2026 | none found |
 > | Initialize `file_size` in `CompactionState::Output` (uninitialized read / UB, platform-independent) | [bitcoin-core/leveldb-subtree@ad9b1c9](https://github.com/bitcoin-core/leveldb-subtree/commit/ad9b1c989380538bfb19c5c65df0d3f72d8ed62b) | not upstream; cherry-picked from Bitcoin Core's maintained fork | fixed **only** in bitcoin-core's fork (that is the source above) |
+> | **Reject overflowing block entry lengths in `DecodeEntry`** — the uint32 bounds check wrapped for crafted entries near 2 GiB and the iterator read out of bounds (platform-independent) | [PR #1350](https://github.com/google/leveldb/pull/1350) → issue [#1348](https://github.com/google/leveldb/issues/1348), open since 2026, found via the issue scan | not upstream; includes the `RejectsOverflowingEntryLengths` regression test | none found |
+> | **Validate block handles against the file size before `ReadBlock`** — a crafted footer/index requested an unbounded read (allocation DoS); index, metaindex, filter and data handles are now bounds-checked (platform-independent) | [PR #1326](https://github.com/google/leveldb/pull/1326) → issue [#1318](https://github.com/google/leveldb/issues/1318), open since 2026, found via the issue scan | not upstream; includes the `OversizedBlockHandle` proof-of-concept regression test | none found |
+> | **Guard against internal keys shorter than 8 bytes** — `ExtractUserKey` underflowed to a near-`SIZE_MAX` slice on truncated keys in release builds; short keys are now rejected at `DecodeFrom` (platform-independent) | [PR #1359](https://github.com/google/leveldb/pull/1359) → issue [#103](https://github.com/google/leveldb/issues/103), open since 2017, found via the issue scan | not upstream | none found |
 > | **Tolerate CRLF line endings in `CURRENT`** — a `\n` or `\r\n` (or lone `\r`) terminator is accepted and the `\r` is stripped before the manifest name is used; a `CURRENT` with no terminator is still rejected as a torn write | [mojang/leveldb#8](https://github.com/Mojang/leveldb/pull/8), merged into Minecraft Bedrock (2024-12) | not proposed upstream; the same defect was fixed independently **three** times downstream: Mojang's original leveldb-mcpe tree ([commit 52edeaab](https://github.com/Amulet-Team/leveldb-mcpe/commit/52edeaab), 2017), [Amulet-Team/leveldb-mcpe#6](https://github.com/Amulet-Team/leveldb-mcpe/pull/6) (2021), and mojang/leveldb#8 (2024). A Windows text tool that rewrites `CURRENT` with CRLF leaves a `\r` inside the manifest file name, and every later `DB::Open()` fails with `Corruption: CURRENT points to a non-existent file` | **Minecraft** and **Amulet (leveldb-mcpe)**: this exact fix, carried in their own forks; upstream has nothing |
 > | **`RepairTable()` skips entries whose internal key cannot be parsed** — the metadata pass in `ScanTable()` already skipped unparsable keys, but the table-rebuilding copy loop did not, so unparseable entries could reach a rebuilt table | [Amulet-Team/leveldb-mcpe@52253f2f](https://github.com/Amulet-Team/leveldb-mcpe/commit/52253f2f) (from Mojang's original leveldb-mcpe tree, 2018, fixed for a real Bedrock production bug) | not proposed upstream | **Minecraft ecosystem**: this fix, carried in their own trees |
 >
@@ -110,7 +113,10 @@
 > because no prior proposal exists anywhere: the durable `RenameFile`, the
 > appending `NewLogger`, the manifest parent-directory sync, the recovery
 > fuzzer `fuzz/fuzz_recovery.cc`, the
-> four regression tests, and this README audit.
+> four regression tests, and this README audit — plus three hardening fixes
+> adopted from unmerged PRs found through the issue scan ([#1350](https://github.com/google/leveldb/pull/1350),
+> [#1326](https://github.com/google/leveldb/pull/1326), [#1359](https://github.com/google/leveldb/pull/1359),
+> see table C).
 >
 > **How the Windows side was audited:** `env_posix.cc` and `env_windows.cc`
 > were read side by side; every behavioural difference found is either in
@@ -174,14 +180,24 @@
 >   compare); branches are `master` and a Copilot-generated WIP updating the
 >   vendored copy to 1.23 — no original C++ fixes.
 >
-> **Issues** (scan 2026-11-04): the highest-volume upstream issues — top 15 by
-> comments and top 15 by reactions, 27 unique — were reviewed for adoptable
-> solutions. None contains an unlanded code fix: #401 (too many open files)
-> was already fixed upstream (646c3588de84, present in this tree's base),
-> #783 (ldb files never deleted) and #182/#1082 (multi-process, read-only
-> mode) are design debates without a patch, #425 (createFilter segfault)
-> ended as an unresolved caller-lifetime diagnosis, and #1247 is a C++14
-> toolchain complaint. #195/#775 remain bug-report context only. Other
+> **Issues** (two passes, 2026-11-04): pass 1 reviewed the highest-volume
+> issues (top 15 by comments, top 15 by reactions). Pass 2, after widening the
+> net, cross-referenced **all 700 issues that have any discussion** against
+> every PR ever filed (655) and deep-read the 14 unmerged PRs attached to the
+> 29 candidate issues. Result: **three fixes adopted** — [PR #1350](https://github.com/google/leveldb/pull/1350)
+> (2 GiB out-of-bounds read in `DecodeEntry`, issue #1348), [PR #1326](https://github.com/google/leveldb/pull/1326)
+> (unbounded allocation via crafted block handles, issue #1318) and [PR #1359](https://github.com/google/leveldb/pull/1359)
+> (size_t underflow on short internal keys, issue #103); the other eleven
+> candidates were rejected — #1000 changes the public `Comparator` API,
+> #762/#763/#764 (4 GiB values) each fix only half the path, #771 is an
+> `Env` API redesign, #1031 adds a feature option, #815 is a one-line log
+> typo, #1374 lacks a test, #869 only touches `db_bench`, and #385 (pthread
+> detach) is obsolete — upstream's `StartThread` has been `std::thread` +
+> `detach()` for years. The first pass's verdicts stand for the rest: #401
+> was already fixed upstream (646c3588de84, in this tree's base), #783 and
+> #182/#1082 are design debates without a patch, #425 ended as an unresolved
+> caller-lifetime diagnosis, #1247 is a C++14 toolchain complaint. #195/#775
+> remain bug-report context only. Other
 > LevelDB implementations — RocksDB, goleveldb, Chromium's
 > `third_party/leveldatabase` — appear above only as prior-art evidence
 > in the downstream-workaround column, never as patch sources.
