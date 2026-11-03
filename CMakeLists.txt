@@ -38,6 +38,11 @@ include(CheckIncludeFile)
 check_include_file("unistd.h" HAVE_UNISTD_H)
 
 include(CheckLibraryExists)
+# Each can be overridden on the command line (-DHAVE_CRC32C=OFF, ...).
+# check_library_exists() only compiles its probe; under a cross toolchain
+# whose sysroot lacks the library the probe still "succeeds" and every
+# HAVE_* turns into a false positive, so cross builds should set them
+# explicitly.
 check_library_exists(crc32c crc32c_value "" HAVE_CRC32C)
 check_library_exists(snappy snappy_compress "" HAVE_SNAPPY)
 check_library_exists(zstd zstd_compress "" HAVE_ZSTD)

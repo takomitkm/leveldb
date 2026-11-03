@@ -1,0 +1,62 @@
+# Copyright 2026 takomitkm. BSD-style license found in the LICENSE file.
+#
+# Runs the public-API smoke test on a real Windows-on-ARM64 runner, verifying
+# the aarch64-windows-gnu static library shipped in the releases.
+
+name: arm64
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke aarch64-windows
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (library only)
+        shell: bash
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+          -DLEVELDB_BUILD_TESTS=OFF -DLEVELDB_BUILD_BENCHMARKS=OFF
+          -DLEVELDB_BUILD_FUZZ_TESTS=OFF
+      - name: Build
+        shell: bash
+        run: cmake --build build
+      - name: Smoke (open, put, get, iterate)
+        shell: bash
+        run: |
+          cat > smoke.cc <<'EOF'
+          #include <cstdio>
+          #include <string>
+          #include "leveldb/db.h"
+          int main() {
+            std::string path = "arm64_smoke_db";
+            leveldb::DestroyDB(path, leveldb::Options());
+            leveldb::DB* raw = nullptr;
+            leveldb::Options opts;
+            opts.create_if_missing = true;
+            leveldb::Status s = leveldb::DB::Open(opts, path, &raw);
+            if (!s.ok()) { std::printf("OPEN_FAIL %s\n", s.ToString().c_str()); return 1; }
+            for (int i = 0; i < 500; i++) {
+              char k[32]; std::snprintf(k, sizeof(k), "key%06d", i);
+              raw->Put(leveldb::WriteOptions(), k, std::string("value-") + k);
+            }
+            int found = 0;
+            for (int i = 0; i < 500; i += 37) {
+              char k[32]; std::snprintf(k, sizeof(k), "key%06d", i);
+              std::string v;
+              if (raw->Get(leveldb::ReadOptions(), k, &v).ok() && v == std::string("value-") + k) found++;
+            }
+            leveldb::Iterator* it = raw->NewIterator(leveldb::ReadOptions());
+            int n = 0;
+            for (it->SeekToFirst(); it->Valid(); it->Next()) n++;
+            delete it; delete raw;
+            std::printf("SMOKE_OK entries=%d probes=%d\n", n, found);
+            return (n == 500 && found == 14) ? 0 : 1;
+          }
+          EOF
+          c++ -O2 -std=c++17 -Iinclude -I. smoke.cc build/libleveldb.a -o smoke.exe
+          ./smoke.exe
