@@ -55,6 +55,52 @@ TEST_F(EnvWindowsTest, TestOpenOnRead) {
   ASSERT_LEVELDB_OK(env_->RemoveFile(test_file));
 }
 
+// RenameFile must atomically replace an existing target. The previous
+// MoveFile/ReplaceFile sequence failed with ERROR_UNABLE_TO_REMOVE_REPLACED
+// in that case (google/leveldb#775), and did not make the rename durable
+// before returning (google/leveldb#195).
+TEST_F(EnvWindowsTest, TestRenameFileReplacesExisting) {
+  std::string test_dir;
+  ASSERT_LEVELDB_OK(env_->GetTestDirectory(&test_dir));
+  std::string from = test_dir + "/rename_from.txt";
+  std::string to = test_dir + "/rename_to.txt";
+
+  {
+    WritableFile* f = nullptr;
+    ASSERT_LEVELDB_OK(env_->NewWritableFile(from, &f));
+    ASSERT_LEVELDB_OK(f->Append("new-content"));
+    ASSERT_LEVELDB_OK(f->Close());
+    delete f;
+  }
+  {
+    WritableFile* f = nullptr;
+    ASSERT_LEVELDB_OK(env_->NewWritableFile(to, &f));
+    ASSERT_LEVELDB_OK(f->Append("old-content"));
+    ASSERT_LEVELDB_OK(f->Close());
+    delete f;
+  }
+
+  // Target exists: the rename must replace it in a single step.
+  ASSERT_LEVELDB_OK(env_->RenameFile(from, to));
+  ASSERT_FALSE(env_->FileExists(from));
+
+  {
+    SequentialFile* f = nullptr;
+    ASSERT_LEVELDB_OK(env_->NewSequentialFile(to, &f));
+    char buf[32];
+    Slice result;
+    ASSERT_LEVELDB_OK(f->Read(sizeof(buf) - 1, &result, buf));
+    ASSERT_EQ("new-content", result.ToString());
+    delete f;
+  }
+
+  // Renaming to a non-existent target must work too.
+  std::string to2 = test_dir + "/rename_to2.txt";
+  ASSERT_LEVELDB_OK(env_->RenameFile(to, to2));
+  ASSERT_FALSE(env_->FileExists(to));
+  ASSERT_LEVELDB_OK(env_->RemoveFile(to2));
+}
+
 }  // namespace leveldb
 
 int main(int argc, char** argv) {

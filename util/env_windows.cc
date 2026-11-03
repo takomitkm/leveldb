@@ -98,14 +98,14 @@ std::string WideCharPathToUtf8(const std::wstring& source) {
       /*CodePage*/CP_UTF8, /*dwFlags=*/0,
       /*lpWideCharStr=*/source.c_str(), /*cchWideChar=*/source_len,
       /*lpMultiByteStr=*/0, /*cbMultiByte=*/0,
-      /*lpDefaultChar=*/nullptr, /*lpUsedDefaultChar=*/false);
+      /*lpDefaultChar=*/nullptr, /*lpUsedDefaultChar=*/nullptr);
 
   std::string out(static_cast<size_t>(out_size), '\0');
   const int final_out_size = WideCharToMultiByte(
       /*CodePage*/ CP_UTF8, /*dwFlags=*/0,
       /*lpWideCharStr=*/source.c_str(), /*cchWideChar=*/source_len,
       /*lpMultiByteStr=*/const_cast<char *>(out.data()), /*cbMultiByte=*/out_size,
-      /*lpDefaultChar=*/nullptr, /*lpUsedDefaultChar=*/false);
+      /*lpDefaultChar=*/nullptr, /*lpUsedDefaultChar=*/nullptr);
 
   (void)final_out_size;
   assert(out_size == final_out_size);
@@ -652,32 +652,19 @@ class WindowsEnv : public Env {
   Status RenameFile(const std::string& from, const std::string& to) override {
     const std::wstring wfrom = WideCharPathFromUtf8(from);
     const std::wstring wto = WideCharPathFromUtf8(to);
-    // Try a simple move first. It will only succeed when |to| doesn't already
-    // exist.
-    if (::MoveFileW(wfrom.c_str(), wto.c_str())) {
-      return Status::OK();
+    // MOVEFILE_REPLACE_EXISTING covers both the "target absent" and the
+    // "target exists" cases in one atomic operation, so the separate
+    // MoveFile/ReplaceFile dance (and ReplaceFile's
+    // ERROR_UNABLE_TO_REMOVE_REPLACED) is not needed.
+    // MOVEFILE_WRITE_THROUGH makes the rename durable before returning, so a
+    // later deletion of obsolete files cannot be persisted ahead of it and a
+    // crash cannot leave CURRENT pointing at a manifest that was already
+    // deleted (google/leveldb#195).
+    if (!::MoveFileExW(wfrom.c_str(), wto.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      return WindowsError(from, ::GetLastError());
     }
-    DWORD move_error = ::GetLastError();
-
-    // Try the full-blown replace if the move fails, as ReplaceFile will only
-    // succeed when |to| does exist. When writing to a network share, we may not
-    // be able to change the ACLs. Ignore ACL errors then
-    // (REPLACEFILE_IGNORE_MERGE_ERRORS).
-    if (::ReplaceFileW(wto.c_str(), wfrom.c_str(), /*lpBackupFileName=*/nullptr,
-                       REPLACEFILE_IGNORE_MERGE_ERRORS,
-                       /*lpExclude=*/nullptr, /*lpReserved=*/nullptr)) {
-      return Status::OK();
-    }
-    DWORD replace_error = ::GetLastError();
-    // In the case of FILE_ERROR_NOT_FOUND from ReplaceFile, it is likely that
-    // |to| does not exist. In this case, the more relevant error comes from the
-    // call to MoveFile.
-    if (replace_error == ERROR_FILE_NOT_FOUND ||
-        replace_error == ERROR_PATH_NOT_FOUND) {
-      return WindowsError(from, move_error);
-    } else {
-      return WindowsError(from, replace_error);
-    }
+    return Status::OK();
   }
 
   Status LockFile(const std::string& filename, FileLock** lock) override {
