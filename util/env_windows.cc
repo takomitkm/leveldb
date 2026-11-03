@@ -349,7 +349,11 @@ class WindowsMmapReadableFile : public RandomAccessFile {
 class WindowsWritableFile : public WritableFile {
  public:
   WindowsWritableFile(std::string filename, ScopedHandle handle)
-      : pos_(0), handle_(std::move(handle)), filename_(std::move(filename)) {}
+      : pos_(0),
+        handle_(std::move(handle)),
+        is_manifest_(IsManifest(filename)),
+        filename_(std::move(filename)),
+        dirname_(Dirname(filename_)) {}
 
   ~WindowsWritableFile() override = default;
 
@@ -393,10 +397,18 @@ class WindowsWritableFile : public WritableFile {
   Status Flush() override { return FlushBuffer(); }
 
   Status Sync() override {
-    // On Windows no need to sync parent directory. Its metadata will be updated
-    // via the creation of the new file, without an explicit sync.
+    // Mirror env_posix.cc: before the manifest itself is flushed, its
+    // directory entry must be durable, so that new files referred to by the
+    // manifest are already in the filesystem when the manifest lands.
+    // (env_windows.cc used to claim no parent-directory sync was needed; a
+    // power failure could in fact leave a created manifest's entry unflushed
+    // even though its data reached the disk.)
+    Status status = SyncDirIfManifest();
+    if (!status.ok()) {
+      return status;
+    }
 
-    Status status = FlushBuffer();
+    status = FlushBuffer();
     if (!status.ok()) {
       return status;
     }
@@ -409,6 +421,51 @@ class WindowsWritableFile : public WritableFile {
   }
 
  private:
+  // The Windows equivalent of POSIX fsync() on a directory: FlushFileBuffers()
+  // on a directory handle. The handle needs GENERIC_WRITE (a read-only
+  // directory handle fails with ERROR_ACCESS_DENIED) and
+  // FILE_FLAG_BACKUP_SEMANTICS (required to open a directory at all); no
+  // administrator privilege is involved. Verified empirically on NTFS.
+  Status SyncDirIfManifest() {
+    Status status;
+    if (!is_manifest_) {
+      return status;
+    }
+
+    ScopedHandle dir(::CreateFileW(
+        WideCharPathFromUtf8(dirname_).c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (!dir.is_valid()) {
+      return WindowsError(dirname_, ::GetLastError());
+    }
+    if (!::FlushFileBuffers(dir.get())) {
+      return WindowsError(dirname_, ::GetLastError());
+    }
+    return status;
+  }
+
+  static std::string Dirname(const std::string& filename) {
+    std::string::size_type separator_pos = filename.find_last_of("/\\");
+    if (separator_pos == std::string::npos) {
+      return std::string(".");
+    }
+    return filename.substr(0, separator_pos);
+  }
+
+  static std::string Basename(const std::string& filename) {
+    std::string::size_type separator_pos = filename.find_last_of("/\\");
+    if (separator_pos == std::string::npos) {
+      return filename;
+    }
+    return filename.substr(separator_pos + 1);
+  }
+
+  static bool IsManifest(const std::string& filename) {
+    // std::string::starts_with() is C++20; this tree builds as C++17.
+    return Basename(filename).rfind("MANIFEST", 0) == 0;
+  }
+
   Status FlushBuffer() {
     Status status = WriteUnbuffered(buf_, pos_);
     pos_ = 0;
@@ -430,7 +487,9 @@ class WindowsWritableFile : public WritableFile {
   size_t pos_;
 
   ScopedHandle handle_;
+  bool is_manifest_;
   const std::string filename_;
+  const std::string dirname_;
 };
 
 // Lock or unlock the entire file as specified by |lock|. Returns true

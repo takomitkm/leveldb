@@ -24,13 +24,16 @@
 > | **Short read handling** in `SequentialFile::Read` | loops until `n` bytes or EOF | a short `ReadFile` was treated as EOF, silently truncating WAL/MANIFEST reads | [PR #1334](https://github.com/google/leveldb/pull/1334) (open since 2026, data loss) | none found |
 > | **Precise `NowMicros()`** | `clock_gettime` (µs) | coarse system timer | [PR #1366](https://github.com/google/leveldb/pull/1366) (open since 2026) | none found |
 > | **Appending `NewLogger`** | `NewLogger()` opens with `O_APPEND \| O_CREAT` — the LOG file grows across opens | `NewLogger()` opened with `fopen(..., "wN")`, truncating the diagnostic LOG at every open and destroying the previous run's diagnostics | written for this fork (one-line `fopen` mode change to `"aN"`, keeping the non-inheritable `"N"` flag) | none needed (cosmetic; upstream still truncates) |
+> | **Parent-directory sync for manifests** | `Sync()` → `SyncDirIfManifest()` opens the parent directory and fsyncs it **before** the manifest data lands | `Sync()` said "On Windows no need to sync parent directory" and only called `FlushFileBuffers` on the file — a power failure could lose a newly created manifest's directory entry even though its data was written, leaving `CURRENT` pointing at a file that no longer exists | written for this fork: `SyncDirIfManifest()` mirrors the POSIX order, opening the parent directory with `CreateFileW(GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS)` and flushing it with `FlushFileBuffers()` (verified empirically on NTFS as a non-admin user on two volumes; the handle needs `GENERIC_WRITE` — a read-only directory handle fails with `ERROR_ACCESS_DENIED` — and no administrator privilege is involved). No prior proposal exists upstream. | **RocksDB**: `WinDirectory::Fsync` is a no-op. **Chromium**: `SyncParent()` is compiled out on Windows. No downstream project flushes the directory. |
 > | Regression test `TestRenameFileReplacesExisting` | — | covers the `ReplaceFile` / `ERROR_UNABLE_TO_REMOVE_REPLACED` case from [#775](https://github.com/google/leveldb/issues/775) | written for this fork | n/a |
 >
 > ### B. Windows ↔ POSIX inconsistencies — still open upstream (documented, not changed here)
 >
-> | Inconsistency | POSIX side | Windows side | Impact | Downstream workaround |
-> |---|---|---|---|---|
-> | **No parent-directory sync** | `Sync()` → `SyncDirIfManifest()` flushes the directory entry for manifests | `env_windows.cc` says "On Windows no need to sync parent directory" and returns without doing it | This is the Windows counterpart of [#195](https://github.com/google/leveldb/issues/195). `MOVEFILE_WRITE_THROUGH` (group A) closes the rename window, but the directory entry of a newly created manifest is still never explicitly flushed. Left unchanged here on purpose: the documented Windows equivalent is the write-through flag, and adding a directory `FlushFileBuffers` would be a larger behavioural change. | Chromium's own `env_chromium.cc` has the same gap — its `SyncParent()` is compiled out on Windows — so it relies on the delete-and-rebuild path above. No downstream project is known to flush the directory on Windows. |
+> **None remaining.** Every inconsistency the audit found is either fixed in
+> table A or on the "checked and found consistent" list. The parent-directory
+> sync — the last entry this table ever held, and the Windows counterpart of
+> [#195](https://github.com/google/leveldb/issues/195) — was fixed in this
+> fork on 2026-11-04 (see table A). Upstream still has both gaps.
 >
 > **Checked and found consistent** (so nobody has to audit them again): file
 > mapping (both use mmap — `CreateFileMappingW`/`MapViewOfFile` on Windows),
@@ -75,8 +78,9 @@
 >
 > **Verified:** builds and passes its own test suite (`leveldb_tests`, `c_test`,
 > `env_windows_test`) with **MSVC 19.44** and **MinGW-w64 GCC 16.2** on Windows 11
-> x64 — 3/3 tests each. The rename test, the CRLF test (`CurrentFileWithCrlf`)
-> and the logger test (`LoggerAppendsAcrossOpens`) pass on both toolchains.
+> x64 — 3/3 tests each. The rename test, the CRLF test (`CurrentFileWithCrlf`),
+> the logger test (`LoggerAppendsAcrossOpens`) and the manifest-sync test
+> (`ManifestSyncFlushesDirectory`) pass on both toolchains.
 > The opt-in fuzz harnesses in [`fuzz/`](fuzz/README.md) (public API and
 > recovery/corruption paths) also pass on both toolchains, and the whole
 > suite passes under AddressSanitizer (MSVC, `/MT` — the `/MD` runtime
@@ -102,10 +106,11 @@
 > — the `RepairTable` parse guard), the OSS-Fuzz public-API harness adapted
 > into [`fuzz/fuzz_db.cc`](fuzz/fuzz_db.cc) (from
 > [google/oss-fuzz](https://github.com/google/oss-fuzz/blob/master/projects/leveldb/fuzz_db.cc)),
-> and five things written for this fork
+> and six things written for this fork
 > because no prior proposal exists anywhere: the durable `RenameFile`, the
-> appending `NewLogger`, the recovery fuzzer `fuzz/fuzz_recovery.cc`, the
-> three regression tests, and this README audit.
+> appending `NewLogger`, the manifest parent-directory sync, the recovery
+> fuzzer `fuzz/fuzz_recovery.cc`, the
+> four regression tests, and this README audit.
 >
 > **How the Windows side was audited:** `env_posix.cc` and `env_windows.cc`
 > were read side by side; every behavioural difference found is either in
