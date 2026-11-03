@@ -19,6 +19,7 @@
 #include "table/block.h"
 #include "table/block_builder.h"
 #include "table/format.h"
+#include "util/coding.h"
 #include "util/random.h"
 #include "util/testutil.h"
 
@@ -639,6 +640,27 @@ TEST_F(Harness, ZeroRestartPointsInBlock) {
   delete iter;
 }
 
+TEST_F(Harness, RejectsOverflowingEntryLengths) {
+  std::string data;
+  PutVarint32(&data, 0);
+  PutVarint32(&data, 0x80000000u);
+  PutVarint32(&data, 0x80000001u);
+  data.push_back('x');
+  PutFixed32(&data, 0);
+  PutFixed32(&data, 1);
+
+  BlockContents contents;
+  contents.data = data;
+  contents.cachable = false;
+  contents.heap_allocated = false;
+  Block block(contents);
+  Iterator* iter = block.NewIterator(BytewiseComparator());
+  iter->SeekToFirst();
+  EXPECT_FALSE(iter->Valid());
+  EXPECT_TRUE(iter->status().IsCorruption()) << iter->status().ToString();
+  delete iter;
+}
+
 // Test the empty key
 TEST_F(Harness, SimpleEmptyKey) {
   for (int i = 0; i < kNumTestArgs; i++) {
@@ -837,6 +859,39 @@ TEST_P(CompressionTableTest, ApproximateOffsetOfCompressed) {
   ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04"), min_z, max_z));
   // Have now emitted two large compressible strings, so adjust expected offset.
   ASSERT_TRUE(Between(c.ApproximateOffsetOf("xyz"), 2 * min_z, 2 * max_z));
+}
+
+TEST(TableTest, OversizedBlockHandle) {
+  static const unsigned char kPoC[] = {
+      0x00, 0x04, 0x05, 0x00, 0x00, 0x28, 0xa1, 0x86, 0x01, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x22, 0x6d, 0xc5, 0xff, 0xff, 0xfa, 0xff, 0xfb,
+      0xbe, 0xff, 0x00, 0x00, 0x04, 0x05, 0x32, 0x00, 0x00, 0x00, 0xd8,
+      0x9b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x6d, 0x3b, 0x00, 0x00,
+      0x05, 0xcc, 0x02, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x2e, 0x02, 0x00, 0x00, 0x00, 0x00,
+      0x41, 0x00, 0x19, 0x00, 0x04, 0x05, 0x00, 0x00, 0x34, 0x00, 0x00,
+      0x60, 0x00, 0x28, 0x00, 0x00, 0x00, 0x02, 0x6d, 0x3b, 0x00, 0x00,
+      0x05, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x80, 0x57, 0xfb, 0x80, 0x8b, 0x24, 0x75, 0x47,
+      0xdb,
+  };
+  Slice poc_data(reinterpret_cast<const char*>(kPoC), sizeof(kPoC));
+  StringSource source(poc_data);
+
+  Options options;
+  Table* raw_table = nullptr;
+  Status s = Table::Open(options, &source, sizeof(kPoC), &raw_table);
+  if (!s.ok()) {
+    ASSERT_EQ(raw_table, nullptr);
+    return;
+  }
+  std::unique_ptr<Table> table(raw_table);
+
+  ReadOptions ro;
+  std::unique_ptr<Iterator> iter(table->NewIterator(ro));
+  iter->SeekToFirst();
+  ASSERT_FALSE(iter->Valid());
+  ASSERT_FALSE(iter->status().ok());
 }
 
 }  // namespace leveldb
