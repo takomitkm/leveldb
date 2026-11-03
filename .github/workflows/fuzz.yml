@@ -29,6 +29,8 @@ jobs:
       - name: Build
         run: cmake --build build --target leveldb_fuzz_db leveldb_fuzz_recovery
       - name: Public-API fuzz
+        shell: bash
         run: build/leveldb_fuzz_db${{ runner.os == 'Windows' && '.exe' || '' }} 150 1
       - name: Recovery fuzz
+        shell: bash
         run: build/leveldb_fuzz_recovery${{ runner.os == 'Windows' && '.exe' || '' }} 50 1
