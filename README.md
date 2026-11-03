@@ -197,7 +197,20 @@
 > was already fixed upstream (646c3588de84, in this tree's base), #783 and
 > #182/#1082 are design debates without a patch, #425 ended as an unresolved
 > caller-lifetime diagnosis, #1247 is a C++14 toolchain complaint. #195/#775
-> remain bug-report context only. Other
+> remain bug-report context only.
+>
+> **CMake library detection under cross builds:** `check_library_exists()`
+> compiles its probe but never links it, so under a cross toolchain whose
+> sysroot lacks crc32c/snappy/zstd every `HAVE_*` turns into a false positive
+> and the build breaks. Known upstream discussion: [#1146](https://github.com/google/leveldb/issues/1146)
+> (the false-negative twin), [PR #809](https://github.com/google/leveldb/pull/809)
+> (FindSnappy module, open since 2020), and [#684](https://github.com/google/leveldb/issues/684)
+> (iOS cross build, closed as an iOS issue). This fork fixes it minimally:
+> the `HAVE_*` checks are cache variables a cross build pins explicitly
+> (`-DHAVE_CRC32C=OFF ...`), which is compatible with a future Find-module
+> approach.
+>
+> Other
 > LevelDB implementations — RocksDB, goleveldb, Chromium's
 > `third_party/leveldatabase` — appear above only as prior-art evidence
 > in the downstream-workaround column, never as patch sources.
