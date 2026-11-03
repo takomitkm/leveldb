@@ -268,11 +268,11 @@ if(HAVE_CLANG_THREAD_SAFETY)
       -Werror -Wthread-safety)
 endif(HAVE_CLANG_THREAD_SAFETY)
 
-if (WIN32)
+if (WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(leveldb
     PUBLIC
       -Wno-deprecated-declarations)
-endif(WIN32)
+endif(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 
 if(HAVE_CRC32C)
   target_link_libraries(leveldb crc32c)
@@ -415,16 +415,32 @@ if(LEVELDB_BUILD_TESTS)
   endif(NOT BUILD_SHARED_LIBS)
 endif(LEVELDB_BUILD_TESTS)
 
+option(LEVELDB_BUILD_FUZZ_TESTS "Build LevelDB's fuzz harnesses" OFF)
+if(LEVELDB_BUILD_FUZZ_TESTS)
+  add_executable(leveldb_fuzz_db "")
+  target_sources(leveldb_fuzz_db
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/fuzz/fuzz_db.cc"
+  )
+  target_link_libraries(leveldb_fuzz_db leveldb)
+  add_executable(leveldb_fuzz_recovery "")
+  target_sources(leveldb_fuzz_recovery
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/fuzz/fuzz_recovery.cc"
+  )
+  target_link_libraries(leveldb_fuzz_recovery leveldb)
+endif(LEVELDB_BUILD_FUZZ_TESTS)
+
 if(LEVELDB_BUILD_BENCHMARKS)
   # This project uses Google benchmark for benchmarking.
   set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   set(BENCHMARK_ENABLE_EXCEPTIONS OFF CACHE BOOL "" FORCE)
   add_subdirectory("third_party/benchmark")
-  if (WIN32)
-    target_compile_options(benchmark 
-      PUBLIC 
+  if (WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(benchmark
+      PUBLIC
     -Wno-invalid-offsetof -Wno-shorten-64-to-32)
-  endif(WIN32)
+  endif(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 
   function(leveldb_benchmark bench_file)
     get_filename_component(bench_target_name "${bench_file}" NAME_WE)
