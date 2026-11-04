@@ -22,7 +22,7 @@ jobs:
   # instead of after a full matrix round-trip.
   quick:
     name: quick (ubuntu gcc Debug, fast suites)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
     - uses: actions/checkout@v5
@@ -68,11 +68,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - os: ubuntu-latest
+        - os: ubuntu-24.04
           compiler: gcc
           CC: gcc
           CXX: g++
-        - os: windows-latest
+        - os: windows-2025
           compiler: msvc
           CC:
           CXX:
@@ -130,21 +130,24 @@ jobs:
       fail-fast: false
       matrix:
         compiler: [clang, gcc, msvc]
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Pinned to the images -latest resolves to today: -latest is a
+        # rolling alias (ubuntu is mid-migration to 26) and red must be
+        # attributable to our commits, not to a swapped environment.
+        os: [ubuntu-24.04, macos-26, windows-2025]
         optimized: [true, false]
         exclude:
         # MSVC only works on Windows.
-        - os: ubuntu-latest
+        - os: ubuntu-24.04
           compiler: msvc
-        - os: macos-latest
+        - os: macos-26
           compiler: msvc
         # Not testing with GCC on macOS.
-        - os: macos-latest
+        - os: macos-26
           compiler: gcc
         # Only testing with MSVC on Windows.
-        - os: windows-latest
+        - os: windows-2025
           compiler: clang
-        - os: windows-latest
+        - os: windows-2025
           compiler: gcc
         include:
         - compiler: clang
