@@ -59,14 +59,17 @@ check_cxx_symbol_exists(fdatasync "unistd.h" HAVE_FDATASYNC)
 check_cxx_symbol_exists(F_FULLFSYNC "fcntl.h" HAVE_FULLFSYNC)
 check_cxx_symbol_exists(O_CLOEXEC "fcntl.h" HAVE_O_CLOEXEC)
 
+# Exception/RTTI settings are applied to leveldb's own targets only, not
+# directory-wide: add_compile_options() here would also hit benchmarks like
+# db_bench_tree_db, whose system headers (Kyoto Cabinet) need exceptions.
+set(LEV_EL_NO_EH "")
+set(LEV_EL_NO_RTTI "")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   # Disable C++ exceptions.
-  add_compile_options(/EHs-c-)
-  add_definitions(-D_HAS_EXCEPTIONS=0)
-
+  set(LEV_EL_NO_EH /EHs-c-)
   if(LEVELDB_DISABLE_RTTI)
     # Disable RTTI.
-    add_compile_options(/GR-)
+    set(LEV_EL_NO_RTTI /GR-)
   endif(LEVELDB_DISABLE_RTTI)
 else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   # Enable strict prototype warnings for C code in clang and gcc.
@@ -75,11 +78,11 @@ else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   endif(NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
 
   # Disable C++ exceptions.
-  add_compile_options(-fno-exceptions)
+  set(LEV_EL_NO_EH -fno-exceptions)
 
   if(LEVELDB_DISABLE_RTTI)
     # Disable RTTI.
-    add_compile_options(-fno-rtti)
+    set(LEV_EL_NO_RTTI -fno-rtti)
   endif(LEVELDB_DISABLE_RTTI)
 endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 
@@ -124,6 +127,9 @@ endif(BUILD_SHARED_LIBS)
 include(GNUInstallDirs)
 
 add_library(leveldb "")
+# leveldb itself builds without exceptions/RTTI; other targets in this
+# directory (benchmarks, tests) keep the compiler defaults.
+target_compile_options(leveldb PRIVATE ${LEV_EL_NO_EH} ${LEV_EL_NO_RTTI})
 target_sources(leveldb
   PRIVATE
     "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
