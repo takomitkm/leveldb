@@ -37,6 +37,28 @@ jobs:
           -DLEVELDB_BUILD_FUZZ_TESTS=ON
       - name: Build
         run: cmake --build build --target leveldb_fuzz_db leveldb_fuzz_recovery
+      # Corpus replay: fuzz/regression_seeds.txt carries seeds of crashes that
+      # were found by past runs and fixed. Each is replayed as a fixed input
+      # before exploration starts, so a fixed crash cannot silently come back
+      # (writing-tests: fixed crashes become permanent regression inputs).
+      - name: Replay regression seeds
+        shell: bash
+        run: |
+          set -o pipefail
+          REPLAY=0
+          FAIL=0
+          while read -r harness seed; do
+            [ -z "$harness" ] && continue
+            case "$harness" in \#*) continue;; esac
+            echo "replay: $harness seed=$seed"
+            REPLAY=$((REPLAY + 1))
+            if ! build/leveldb_fuzz_${harness}${{ runner.os == 'Windows' && '.exe' || '' }} 1 "$seed" > "replay_${harness}_${seed}.log" 2>&1; then
+              echo "REGRESSION: $harness seed=$seed crashed again"
+              FAIL=$((FAIL + 1))
+            fi
+          done < fuzz/regression_seeds.txt
+          echo "replayed=$REPLAY regressions=$FAIL"
+          [ "$FAIL" -eq 0 ]
       # Seed = run_number: every push explores new inputs instead of replaying
       # the same fixed seed; the seed is printed in the harness output (and in
       # fuzz_*.log artifacts) so any failure stays reproducible.
@@ -50,9 +72,34 @@ jobs:
         run: |
           set -o pipefail
           build/leveldb_fuzz_recovery${{ runner.os == 'Windows' && '.exe' || '' }} 50 ${{ github.run_number }} 2>&1 | tee fuzz_recovery.log
+      # On a fresh crash, surface the seed prominently in the artifact together
+      # with a fill-in template for fuzz/regression_seeds.txt, so turning the
+      # crash into a permanent regression input is a one-line edit after the
+      # fix lands (writing-tests: fuzz findings flow back into the suite).
+      - name: Prepare crash-report artifact on failure
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p crash-report
+          for f in fuzz_db.log fuzz_recovery.log; do
+            [ -f "$f" ] || continue
+            cp "$f" crash-report/
+            # the harness prints the offending seed on its last lines
+            grep -aE 'seed [0-9]+' "$f" | tail -3 > "crash-report/${f%.log}-seeds.txt" || true
+          done
+          {
+            echo "# Add one line per fixed crash to fuzz/regression_seeds.txt:"
+            echo "#   <db|recovery> <seed>"
+            echo "# Format reference: see the Replay regression seeds step in"
+            echo "# .github/workflows/fuzz.yml."
+            date -u +"discovered: %Y-%m-%dT%H:%M:%SZ (run ${{ github.run_number }}, HEAD ${{ github.sha }})"
+          } > crash-report/HOWTO-regression-seed.txt
       - name: Upload fuzz logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-logs-${{ matrix.os }}
-          path: fuzz_*.log
+          path: |
+            fuzz_*.log
+            crash-report/
+            replay_*.log

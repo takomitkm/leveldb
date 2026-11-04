@@ -1,0 +1,12 @@
+# Fuzz regression seeds.
+#
+# One "harness seed" pair per line. Lines starting with '#' and empty lines
+# are ignored. Harness is "db" (leveldb_fuzz_db) or "recovery"
+# (leveldb_fuzz_recovery); the seed is the number printed in the harness
+# output ("seed NNN: ...") when a run finds a crash.
+#
+# Replay contract: the fuzz workflow replays every line here with
+# iterations=1 before exploration starts. A line may only be added AFTER
+# the crash it captures has been fixed; a regression here fails the job.
+#
+# (no entries yet - populate after the first fixed crash)
