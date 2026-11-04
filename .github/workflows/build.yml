@@ -12,6 +12,16 @@ on:
       - 'LICENSE'
       - 'AUTHORS'
   pull_request:
+    # Docs-only PRs don't exercise this workflow either. Note: if a check
+    # from this workflow is ever made a required status check, a docs-only
+    # PR would wait forever for a check that never starts - drop this
+    # filter in that case (GitHub docs: "Handling skipped but required
+    # checks").
+    paths-ignore:
+      - '**.md'
+      - 'doc/**'
+      - 'LICENSE'
+      - 'AUTHORS'
 
 permissions:
   contents: read
