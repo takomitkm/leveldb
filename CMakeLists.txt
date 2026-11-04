@@ -64,9 +64,11 @@ check_cxx_symbol_exists(O_CLOEXEC "fcntl.h" HAVE_O_CLOEXEC)
 # db_bench_tree_db, whose system headers (Kyoto Cabinet) need exceptions.
 set(LEV_EL_NO_EH "")
 set(LEV_EL_NO_RTTI "")
+set(LEV_EL_EH_DEFS "")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   # Disable C++ exceptions.
   set(LEV_EL_NO_EH /EHs-c-)
+  set(LEV_EL_EH_DEFS _HAS_EXCEPTIONS=0)
   if(LEVELDB_DISABLE_RTTI)
     # Disable RTTI.
     set(LEV_EL_NO_RTTI /GR-)
@@ -130,6 +132,7 @@ add_library(leveldb "")
 # leveldb itself builds without exceptions/RTTI; other targets in this
 # directory (benchmarks, tests) keep the compiler defaults.
 target_compile_options(leveldb PRIVATE ${LEV_EL_NO_EH} ${LEV_EL_NO_RTTI})
+target_compile_definitions(leveldb PRIVATE ${LEV_EL_EH_DEFS})
 target_sources(leveldb
   PRIVATE
     "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
