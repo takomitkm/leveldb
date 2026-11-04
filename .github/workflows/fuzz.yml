@@ -5,7 +5,15 @@
 # workflow adds coverage for the public-API and recovery-path fuzzers.
 
 name: fuzz
-on: [push, pull_request]
+on:
+  push:
+    # Docs-only commits don't exercise the fuzzers; skip them.
+    paths-ignore:
+      - '**.md'
+      - 'doc/**'
+      - 'LICENSE'
+      - 'AUTHORS'
+  pull_request:
 
 permissions:
   contents: read
@@ -20,7 +28,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
