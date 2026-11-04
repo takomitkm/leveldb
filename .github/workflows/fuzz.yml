@@ -28,9 +28,22 @@ jobs:
           -DLEVELDB_BUILD_FUZZ_TESTS=ON
       - name: Build
         run: cmake --build build --target leveldb_fuzz_db leveldb_fuzz_recovery
+      # Seed = run_number: every push explores new inputs instead of replaying
+      # the same fixed seed; the seed is printed in the harness output (and in
+      # fuzz_*.log artifacts) so any failure stays reproducible.
       - name: Public-API fuzz
         shell: bash
-        run: build/leveldb_fuzz_db${{ runner.os == 'Windows' && '.exe' || '' }} 150 1
+        run: |
+          set -o pipefail
+          build/leveldb_fuzz_db${{ runner.os == 'Windows' && '.exe' || '' }} 150 ${{ github.run_number }} 2>&1 | tee fuzz_db.log
       - name: Recovery fuzz
         shell: bash
-        run: build/leveldb_fuzz_recovery${{ runner.os == 'Windows' && '.exe' || '' }} 50 1
+        run: |
+          set -o pipefail
+          build/leveldb_fuzz_recovery${{ runner.os == 'Windows' && '.exe' || '' }} 50 ${{ github.run_number }} 2>&1 | tee fuzz_recovery.log
+      - name: Upload fuzz logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-logs-${{ matrix.os }}
+          path: fuzz_*.log

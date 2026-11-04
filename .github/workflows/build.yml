@@ -9,7 +9,43 @@ permissions:
   contents: read
 
 jobs:
+  # L0 quick layer: one fast cell (ubuntu/gcc/Debug, fast gtest suites only)
+  # runs before the full matrix, so most breakage is caught in ~2 minutes
+  # instead of after a full matrix round-trip.
+  quick:
+    name: quick (ubuntu gcc Debug, fast suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Generate build config
+      run: >-
+        cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build"
+        -DCMAKE_BUILD_TYPE=Debug
+        -DLEVELDB_BUILD_TESTS=ON
+        -DLEVELDB_BUILD_BENCHMARKS=OFF
+
+    - name: Build
+      run: cmake --build "${{ github.workspace }}/build" --config Debug --parallel
+
+    - name: Run fast test suites
+      working-directory: ${{ github.workspace }}/build
+      run: >-
+        ./leveldb_tests
+        --gtest_filter='ArenaTest.*:BloomTest.*:CRC.*:CacheTest.*:Coding.*:FileNameTest.*:FormatTest.*:HASH.*:Logging.*:SkipTest.*:VersionEditTest.*:WriteBatchTest.*'
+
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: quick-test-logs
+        path: build/Testing/
+
   build-and-test:
+    needs: quick
     name:  >-
       CI
       ${{ matrix.os }}
@@ -100,3 +136,10 @@ jobs:
 
     - name: Test CMake installation
       run: cmake --build "${{ env.CMAKE_BUILD_DIR }}" --target install
+
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ctest-logs-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.optimized && 'rel' || 'dbg' }}
+        path: build/Testing/
