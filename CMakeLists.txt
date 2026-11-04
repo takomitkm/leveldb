@@ -33,6 +33,7 @@ endif (WIN32)
 option(LEVELDB_BUILD_TESTS "Build LevelDB's unit tests" ON)
 option(LEVELDB_BUILD_BENCHMARKS "Build LevelDB's benchmarks" ON)
 option(LEVELDB_INSTALL "Install LevelDB's header and library" ON)
+option(LEVELDB_DISABLE_EXCEPTIONS "Build LevelDB without C++ exceptions" OFF)
 option(LEVELDB_DISABLE_RTTI "Disable Rtti" ON)
 
 include(CheckIncludeFile)
@@ -62,31 +63,40 @@ check_cxx_symbol_exists(O_CLOEXEC "fcntl.h" HAVE_O_CLOEXEC)
 # Exception/RTTI settings are applied to leveldb's own targets only, not
 # directory-wide: add_compile_options() here would also hit benchmarks like
 # db_bench_tree_db, whose system headers (Kyoto Cabinet) need exceptions.
+# Exceptions stay on by default so the library matches how consumers build
+# against the public headers (their STL is compiled with _HAS_EXCEPTIONS=1);
+# -DLEVELDB_DISABLE_EXCEPTIONS=ON opts out for codebases that disable
+# exceptions project-wide (on MSVC this also sets _HAS_EXCEPTIONS=0 so the
+# STL implementation agrees with /EHs-c-).
 set(LEV_EL_NO_EH "")
 set(LEV_EL_NO_RTTI "")
 set(LEV_EL_EH_DEFS "")
-if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-  # Disable C++ exceptions.
-  set(LEV_EL_NO_EH /EHs-c-)
-  set(LEV_EL_EH_DEFS _HAS_EXCEPTIONS=0)
-  if(LEVELDB_DISABLE_RTTI)
+if(LEVELDB_DISABLE_EXCEPTIONS)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    # Disable C++ exceptions.
+    set(LEV_EL_NO_EH /EHs-c-)
+    set(LEV_EL_EH_DEFS _HAS_EXCEPTIONS=0)
+  else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    # Disable C++ exceptions.
+    set(LEV_EL_NO_EH -fno-exceptions)
+  endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+endif(LEVELDB_DISABLE_EXCEPTIONS)
+if(LEVELDB_DISABLE_RTTI)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     # Disable RTTI.
     set(LEV_EL_NO_RTTI /GR-)
-  endif(LEVELDB_DISABLE_RTTI)
-else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    # Disable RTTI.
+    set(LEV_EL_NO_RTTI -fno-rtti)
+  endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+endif(LEVELDB_DISABLE_RTTI)
+
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   # Enable strict prototype warnings for C code in clang and gcc.
   if(NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-prototypes")
   endif(NOT CMAKE_C_FLAGS MATCHES "-Wstrict-prototypes")
-
-  # Disable C++ exceptions.
-  set(LEV_EL_NO_EH -fno-exceptions)
-
-  if(LEVELDB_DISABLE_RTTI)
-    # Disable RTTI.
-    set(LEV_EL_NO_RTTI -fno-rtti)
-  endif(LEVELDB_DISABLE_RTTI)
-endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+endif(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 
 # Test whether -Wthread-safety is available. See
 # https://clang.llvm.org/docs/ThreadSafetyAnalysis.html
@@ -129,7 +139,7 @@ endif(BUILD_SHARED_LIBS)
 include(GNUInstallDirs)
 
 add_library(leveldb "")
-# leveldb itself builds without exceptions/RTTI; other targets in this
+# leveldb honors the LEVELDB_DISABLE_* options above; other targets in this
 # directory (benchmarks, tests) keep the compiler defaults.
 target_compile_options(leveldb PRIVATE ${LEV_EL_NO_EH} ${LEV_EL_NO_RTTI})
 target_compile_definitions(leveldb PRIVATE ${LEV_EL_EH_DEFS})
@@ -499,6 +509,15 @@ if(LEVELDB_BUILD_BENCHMARKS)
   # with Homebrew on Mac.
   set(OLD_CMAKE_REQURED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES})
   list(APPEND CMAKE_REQUIRED_LIBRARIES kyotocabinet)
+  # Kyoto Cabinet's headers use exceptions, so probe with them re-enabled:
+  # a -fno-exceptions in CMAKE_CXX_FLAGS would otherwise fail this check for
+  # the wrong reason and db_bench_tree_db would silently disappear.
+  set(OLD_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} /EHsc")
+  else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fexceptions")
+  endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   check_cxx_source_compiles("
 #include <kcpolydb.h>
 
@@ -508,10 +527,18 @@ int main() {
   return 0;
 }
   "  HAVE_KYOTOCABINET)
+  set(CMAKE_REQUIRED_FLAGS "${OLD_CMAKE_REQUIRED_FLAGS}")
   set(CMAKE_REQUIRED_LIBRARIES ${OLD_CMAKE_REQURED_LIBRARIES})
   if(HAVE_KYOTOCABINET)
     leveldb_benchmark("benchmarks/db_bench_tree_db.cc")
     target_link_libraries(db_bench_tree_db kyotocabinet)
+    # Same reason as the probe above: this benchmark cannot compile without
+    # exception handling, whatever the surrounding project decides.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+      target_compile_options(db_bench_tree_db PRIVATE /EHsc)
+    else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+      target_compile_options(db_bench_tree_db PRIVATE -fexceptions)
+    endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   endif(HAVE_KYOTOCABINET)
 endif(LEVELDB_BUILD_BENCHMARKS)
 
