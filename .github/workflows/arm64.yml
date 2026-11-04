@@ -4,7 +4,15 @@
 # the aarch64-windows-gnu static library shipped in the releases.
 
 name: arm64
-on: [push, pull_request]
+on:
+  push:
+    # Docs-only commits don't exercise the smoke test; skip them.
+    paths-ignore:
+      - '**.md'
+      - 'doc/**'
+      - 'LICENSE'
+      - 'AUTHORS'
+  pull_request:
 
 permissions:
   contents: read

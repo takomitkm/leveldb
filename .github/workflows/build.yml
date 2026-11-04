@@ -3,7 +3,15 @@
 # found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    # Docs-only commits don't exercise the tests; skip them.
+    paths-ignore:
+      - '**.md'
+      - 'doc/**'
+      - 'LICENSE'
+      - 'AUTHORS'
+  pull_request:
 
 permissions:
   contents: read
