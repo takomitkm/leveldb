@@ -84,6 +84,7 @@ jobs:
         -DCMAKE_BUILD_TYPE=Debug
         -DLEVELDB_BUILD_TESTS=ON
         -DLEVELDB_BUILD_BENCHMARKS=OFF
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
     # Building the two targets by name keeps the step short and guards the
     # layout as well: if env_windows_test stops being generated on Windows
@@ -277,6 +278,7 @@ jobs:
       run: >-
         cmake -S "${{ github.workspace }}" -B "${{ env.CMAKE_BUILD_DIR }}"
         -DCMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=${{ runner.os == 'Windows' && 'MultiThreaded' || 'MultiThreadedDLL' }}
         -DCMAKE_INSTALL_PREFIX=${{ runner.temp }}/install_test/
 
     - name: Build
