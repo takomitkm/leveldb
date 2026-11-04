@@ -52,6 +52,94 @@ jobs:
         name: quick-test-logs
         path: build/Testing/
 
+  # L0-W quick layer, Windows half. The four Windows-only regressions in
+  # util/env_windows_test.cc (RenameFile replacing CURRENT, MANIFEST
+  # parent-directory sync, LOG append across opens, open-on-read) used to be
+  # reachable only through build-and-test, i.e. after a full matrix
+  # round-trip (~15 minutes). They are cheap: one small test binary plus two
+  # suites inside leveldb_tests. This cell runs exactly those and nothing
+  # else, so the same breakage surfaces in ~3 minutes.
+  #
+  # Deliberately parallel to `quick` (no needs:) so a Windows-only breakage
+  # never blocks the Linux/macOS quick signal or the full matrix. The
+  # workflow run still goes red because a failed job fails the run; the
+  # trade-off is written up in the design note that ships with this change.
+  win-quick:
+    name: win-quick (windows msvc Debug, Windows env suites)
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        submodules: true
+
+    # Same generator and configuration as the windows/msvc/debug cell of
+    # build-and-test (default Visual Studio generator, Debug). Benchmarks are
+    # switched off because this cell never runs them: they are separate
+    # targets and cannot change how the library or the tests compile.
+    - name: Generate build config
+      shell: bash
+      run: >-
+        cmake -S . -B build
+        -DCMAKE_BUILD_TYPE=Debug
+        -DLEVELDB_BUILD_TESTS=ON
+        -DLEVELDB_BUILD_BENCHMARKS=OFF
+
+    # Building the two targets by name keeps the step short and guards the
+    # layout as well: if env_windows_test stops being generated on Windows
+    # (e.g. the WIN32 branch in CMakeLists.txt regresses), this step fails
+    # here instead of the suite silently disappearing from the matrix.
+    - name: Build Windows test targets
+      shell: bash
+      run: >-
+        cmake --build build --config Debug --parallel
+        --target env_windows_test leveldb_tests
+
+    # ctest -R selects the standalone env_windows_test ctest entry, which
+    # carries all four EnvWindowsTest cases. The FileNameTest/Logging cases
+    # live inside the aggregate leveldb_tests binary, which is registered as
+    # a single ctest entry, so they are selected with a gtest filter
+    # (--gtest_filter) exactly like the `quick` job does. A ctest -R regex
+    # cannot reach them; relying on one would silently run nothing.
+    - name: Run Windows env suites (env_windows_test)
+      shell: bash
+      working-directory: ${{ github.workspace }}/build
+      run: |
+        set -o pipefail
+        ctest -C Debug -R '^env_windows_test$' --verbose 2>&1 | tee win_quick_env_ctest.log
+        # A filter that silently matches nothing must not pass: the gtest
+        # summary has to report every case the suite is supposed to contain.
+        passed=$(grep -oE '\[  PASSED  \] [0-9]+ tests?' win_quick_env_ctest.log | grep -oE '[0-9]+' | head -1)
+        if [ "${passed:-0}" -lt 4 ]; then
+          echo "::error::env_windows_test reported ${passed:-0} passing gtest cases, expected at least 4 (selection went empty or the suite shrank)"
+          exit 1
+        fi
+
+    - name: Run FileNameTest and Logging
+      shell: bash
+      working-directory: ${{ github.workspace }}/build
+      run: |
+        set -o pipefail
+        # The Visual Studio generator is multi-config, so the binary lands in
+        # build/Debug/ (a single-config generator would put it straight into
+        # build/; ctest takes care of the prefix itself through -C Debug).
+        ./Debug/leveldb_tests.exe --gtest_filter='FileNameTest.*:Logging.*' 2>&1 | tee win_quick_leveldb_tests.log
+        passed=$(grep -oE '\[  PASSED  \] [0-9]+ tests?' win_quick_leveldb_tests.log | grep -oE '[0-9]+' | head -1)
+        if [ "${passed:-0}" -lt 7 ]; then
+          echo "::error::FileNameTest+Logging reported ${passed:-0} passing gtest cases, expected at least 7 (selection went empty or a case was dropped)"
+          exit 1
+        fi
+
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-quick-test-logs
+        path: |
+          build/win_quick_env_ctest.log
+          build/win_quick_leveldb_tests.log
+          build/Testing/
+
   # Covers the opt-in profile: the library is compiled with
   # -DLEVELDB_DISABLE_EXCEPTIONS=ON (MSVC: /EHs-c- + _HAS_EXCEPTIONS=0,
   # gcc/clang: -fno-exceptions) while the tests still build with exceptions
