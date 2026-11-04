@@ -44,6 +44,72 @@ jobs:
         name: quick-test-logs
         path: build/Testing/
 
+  # Covers the opt-in profile: the library is compiled with
+  # -DLEVELDB_DISABLE_EXCEPTIONS=ON (MSVC: /EHs-c- + _HAS_EXCEPTIONS=0,
+  # gcc/clang: -fno-exceptions) while the tests still build with exceptions
+  # enabled, i.e. the "library without exceptions, consumer with them"
+  # combination the option is meant to support. Two cells only: the flag is
+  # the same code path on every OS, so ubuntu/gcc plus windows/msvc is enough
+  # to keep it from rotting.
+  no-exceptions:
+    needs: quick
+    name: no-exceptions (${{ matrix.os }} ${{ matrix.compiler }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-latest
+          compiler: gcc
+          CC: gcc
+          CXX: g++
+        - os: windows-latest
+          compiler: msvc
+          CC:
+          CXX:
+    env:
+      CC: ${{ matrix.CC }}
+      CXX: ${{ matrix.CXX }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Install dependencies on Linux
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install libkyotocabinet-dev libsnappy-dev libsqlite3-dev
+
+    - name: Generate build config
+      run: >-
+        cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build"
+        -DCMAKE_BUILD_TYPE=Debug
+        -DLEVELDB_DISABLE_EXCEPTIONS=ON
+
+    - name: Build
+      run: cmake --build "${{ github.workspace }}/build" --config Debug --parallel
+
+    # Guards the kyoto probe against silently skipping the target again: with
+    # -fno-exceptions in CMAKE_CXX_FLAGS this check used to fail for the wrong
+    # reason and db_bench_tree_db simply disappeared from the build.
+    - name: Check the Kyoto Cabinet benchmark was generated
+      if: ${{ runner.os == 'Linux' }}
+      working-directory: ${{ github.workspace }}/build
+      run: test -f db_bench_tree_db
+
+    - name: Run Tests
+      working-directory: ${{ github.workspace }}/build
+      run: ctest -C Debug --verbose
+
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: no-exceptions-logs-${{ matrix.os }}
+        path: build/Testing/
+
   build-and-test:
     needs: quick
     name:  >-
