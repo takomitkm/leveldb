@@ -417,8 +417,14 @@ jobs:
       if: ${{ runner.os != 'Windows' }}
       run: ${{ env.BINARY_PATH }}db_bench_sqlite3${{ env.BINARY_SUFFIX }}
 
+    # The clang-only condition dates from the days when the Kyoto Cabinet
+    # probe silently failed under gcc (the global -fno-exceptions poisoned
+    # the check), so db_bench_tree_db was never generated there and running
+    # it would fail with "file not found". The probe and the benchmark's
+    # exception flags are fixed since aa0c122, so gcc links and runs it too;
+    # the Linux cells are the ones that install libkyotocabinet-dev.
     - name: Run Kyoto Cabinet Benchmarks
-      if: ${{ runner.os == 'Linux' && matrix.compiler == 'clang' }}
+      if: ${{ runner.os == 'Linux' }}
       run: ${{ env.BINARY_PATH }}db_bench_tree_db${{ env.BINARY_SUFFIX }}
 
     - name: Test CMake installation
