@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import execute_main
 from common import REPO, export_env, require, validate_sha, validate_tag
 
 
@@ -26,4 +27,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    execute_main(main)

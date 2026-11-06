@@ -55,11 +55,27 @@ jobs:
       # No workflow input is expanded into a shell command.
       - name: Install Debian 10 build prerequisites
         run: |
-          printf '%s\n' 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
-          rm -f /etc/apt/sources.list.d/*
-          printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
-          apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get -y install --no-install-recommends git g++ make ca-certificates python3 curl xz-utils
+          mkdir -p "$RUNNER_TEMP/leveldb-release/logs"
+          log="$RUNNER_TEMP/leveldb-release/logs/debian-bootstrap.log"
+          set +e
+          (
+            set -e
+            printf '%s\n' 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
+            rm -f /etc/apt/sources.list.d/*
+            printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
+            apt-get -o Acquire::Check-Valid-Until=false update
+            apt-get -y install --no-install-recommends git g++ make ca-certificates python3 curl xz-utils
+          ) > "$log" 2>&1
+          status=$?
+          cat "$log"
+          if [ "$status" -ne 0 ]; then
+            while IFS= read -r line; do
+              line="${line//%/%25}"
+              line="${line//$'\r'/%0D}"
+              printf '::error title=Debian bootstrap::%s\n' "$line"
+            done < <(tail -n 20 "$log")
+          fi
+          exit "$status"
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0

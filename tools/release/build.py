@@ -10,6 +10,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import execute_main
 from common import (OPTIONAL, OPTIONAL_POLICY, REPO, asset_name, context, inspect_package, pack,
                     require, run, sha256, stem, unpack, variants, work_root, write_json)
 
@@ -363,4 +364,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    execute_main(main)

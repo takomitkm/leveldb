@@ -10,6 +10,7 @@ import tempfile
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import execute_main
 from common import REPO, context, export_env, require, run, sha256, unpack, work_root
 
 CMAKE_VERSION = '3.31.6'
@@ -132,4 +133,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    execute_main(main)

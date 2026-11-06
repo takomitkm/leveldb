@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import execute_main
 from common import (REPO, context, require, sha256, validate_sha, verify_bundle, work_root)
 
 
@@ -195,4 +196,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    execute_main(main)

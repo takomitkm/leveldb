@@ -23,6 +23,20 @@ OPTIONAL_POLICY = {key: {'cache': 'OFF', 'generated': None if key == 'HAVE_TCMAL
 SPEC_KEYS = ('os', 'arch', 'compiler', 'linkage', 'config', 'path_mode', 'crt')
 
 
+def report_error(message):
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        text = str(message)[-10000:].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        print('::error title=Release validation::' + text, flush=True)
+
+
+def execute_main(main):
+    try:
+        main()
+    except Exception as error:
+        report_error('{}: {}'.format(type(error).__name__, error))
+        raise
+
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
@@ -107,6 +121,7 @@ def run(args, log, cwd=REPO, env=None, timeout=3600):
     text = log.read_text(encoding='utf-8', errors='replace')
     if process.returncode:
         print(text[-12000:], flush=True)
+        report_error('Command failed ({}) -- {}\n{}'.format(process.returncode, log.name, text[-8000:]))
         raise RuntimeError('Command failed ({}) -- {}'.format(process.returncode, log))
     return text
 
