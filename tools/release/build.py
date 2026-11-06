@@ -309,6 +309,12 @@ def build_one(spec, tag, sha, source, root, cmake, ctest, submodules):
                 'abi': {'exceptions': True, 'rtti': True, 'msvc_crt': spec['crt']},
                 'optional_dependencies': OPTIONAL_POLICY,
                 'tools': tools, 'source_submodules': submodules, 'tests': tests,
+                'actions': {
+                    'run_id': os.environ['GITHUB_RUN_ID'],
+                    'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT', '1'),
+                    'url': 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] +
+                           '/actions/runs/' + os.environ['GITHUB_RUN_ID'],
+                },
                 'cmake_cache': {k: v for k, v in cache.items() if
                     k.startswith(('CMAKE_C_FLAGS', 'CMAKE_CXX_FLAGS')) or
                     k in ('CMAKE_MSVC_RUNTIME_LIBRARY', 'LEVELDB_WINDOWS_UTF8_PATHS')}}

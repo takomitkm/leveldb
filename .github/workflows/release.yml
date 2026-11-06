@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/ci/release-agg4' }}
 
 env:
   RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || 'agg.4' }}
@@ -26,8 +26,32 @@ env:
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
+  prepare:
+    name: Resolve identity and reusable preview
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      run_id: ${{ steps.preview.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source and version
+        run: python3 -I tools/release/identity.py
+      - name: Find successful preview for this commit and version
+        id: preview
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 -I tools/release/find_preview.py
+
   linux:
     name: Linux GCC 8 / ${{ matrix.arch }}
+    needs: prepare
+    if: needs.prepare.outputs.run_id == ''
     permissions:
       contents: read
     strategy:
@@ -229,9 +253,14 @@ jobs:
 
   validate:
     name: Verify complete 22-archive release
-    needs: zig
+    needs: [prepare, zig]
+    if: >-
+      ${{ !failure() && !cancelled() && needs.prepare.result == 'success' &&
+          ((needs.prepare.outputs.run_id != '' && needs.zig.result == 'skipped') ||
+           (needs.prepare.outputs.run_id == '' && needs.zig.result == 'success')) }}
     permissions:
       contents: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -243,27 +272,33 @@ jobs:
         run: python3 -I tools/release/identity.py
       - uses: actions/download-artifact@v4
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
           pattern: release-bin-*
           merge-multiple: true
           path: ${{ runner.temp }}/release-input
       - name: Verify manifests, layouts, metadata and checksums without publishing
         run: python3 -I tools/release/publish.py --artifacts "$RUNNER_TEMP/release-input" --verify-only
+      # A successful marker proves this commit/version passed the complete verification.
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: release-validation
+          name: release-validation-${{ env.RELEASE_TAG }}
           path: |
             ${{ runner.temp }}/leveldb-release/SHA256SUMS
             ${{ runner.temp }}/leveldb-release/logs/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   publish:
     name: Publish verified tag through a draft
-    needs: validate
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agg.')
+    needs: [prepare, validate]
+    if: >-
+      ${{ !failure() && !cancelled() && needs.prepare.result == 'success' &&
+          needs.validate.result == 'success' && github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/agg.') }}
     permissions:
       contents: write
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -275,6 +310,8 @@ jobs:
         run: python3 -I tools/release/identity.py
       - uses: actions/download-artifact@v4
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
           pattern: release-bin-*
           merge-multiple: true
           path: ${{ runner.temp }}/release-input

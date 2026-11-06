@@ -46,7 +46,7 @@ def main():
     workflow = (REPO / '.github/workflows/release.yml').read_text(encoding='utf-8')
     require(workflow.count('contents: write') == 1, 'Exactly one job may write releases')
     require(re.findall(r'^  ([a-z]+):\n(?=    name:)', workflow, re.MULTILINE) ==
-            ['linux', 'msvc', 'mingw', 'zig', 'validate', 'publish'], 'Job chain changed')
+            ['prepare', 'linux', 'msvc', 'mingw', 'zig', 'validate', 'publish'], 'Job chain changed')
     require('max-parallel: 1' in workflow and 'submodules: recursive' in workflow,
             'Missing serial matrix or submodules')
     require('actions/checkout@v5' in workflow and 'actions/upload-artifact@v4' in workflow and

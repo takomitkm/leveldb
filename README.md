@@ -154,6 +154,8 @@
 
 > | **[Path and custom-Env compatibility regressions](https://github.com/takomitkm/leveldb/commit/6b5edb6)** | [6b5edb6](https://github.com/takomitkm/leveldb/commit/6b5edb6) | `compatibility` | Non-ASCII file/logger/database paths are checked in ACP and UTF-8 modes; custom log readers reuse external buffers across full and short reads. Each old behaviour is restored temporarily to prove the new cases fail, then the fix is rebuilt and verified again |
 
+> | **[Actions-built binary releases and extracted-package consumers](https://github.com/takomitkm/leveldb/commit/b57269c)** — 22 binary variants, including both Windows path modes, installed and archived with exact-source build records | [b57269c](https://github.com/takomitkm/leveldb/commit/b57269c) | `release` | Packages are checked for all public headers, relocatable CMake exports, runtime/dependency settings and working consumers built from the final extracted archives. Tag pushes publish only after all groups and manifests pass validation |
+
 > ### Provenance, method, and scope — PR scan 2026-11-04 00:17, branch scan 2026-11-04 01:13 (UTC+8)
 >
 > **Every patch in this tree comes from one of these places, and nothing else:**
