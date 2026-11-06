@@ -63,7 +63,9 @@ def validate_sha(sha):
 def variants(family=None, arch=None):
     result = []
     def add(os_name, architecture, compiler, linkage, config, mode='posix'):
-        crt = ('MTd' if config == 'Debug' else 'MT') if compiler == 'msvc' else None
+        crt = None
+        if compiler == 'msvc':
+            crt = ('MD' if linkage == 'dll' else 'MT') + ('d' if config == 'Debug' else '')
         result.append(dict(zip(SPEC_KEYS, (
             os_name, architecture, compiler, linkage, config, mode, crt))))
     for architecture in ('x64', 'x86', 'arm64'):

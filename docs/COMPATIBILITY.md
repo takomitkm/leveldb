@@ -39,11 +39,20 @@ Linux paths remain byte strings, with no new encoding conversion.
 C++ libraries must match the application's architecture and compiler ABI. An
 MSVC `.lib` and a MinGW/Zig `.a` are different toolchain products.
 
-The MSVC packages use `/MT` for Release and `/MTd` for Debug. Link static packages
-into applications built with the corresponding CRT and iterator-debugging
-configuration. An application using `/MD` or `/MDd` should build LevelDB from
-source with that runtime; the static package is not an unconditional replacement
-for it. Debug and Release libraries are not interchangeable.
+MSVC static packages use `/MT` for Release and `/MTd` for Debug. Static-library
+consumers must use the same CRT and iterator-debugging configuration. Applications
+using `/MD` or `/MDd` must build a static LevelDB from source with that runtime.
+
+MSVC DLL packages use `/MD` for Release and `/MDd` for Debug; consumers must match
+these settings so C++ objects and heap allocations crossing the DLL boundary use
+the same CRT. Release DLLs require the matching Microsoft Visual C++
+Redistributable. Debug DLLs require the matching Visual Studio debug CRT, which
+is not part of the ordinary redistributable runtime. Debug and Release libraries
+are not interchangeable.
+
+These CRT settings apply to the release packages. Source builds leave the CRT
+selection to the calling CMake project or toolchain and do not force `/MT` or
+`/MD`.
 
 The fork's source build defaults leave exceptions and RTTI enabled. Upstream's
 CMake build forcibly disabled them. The `LEVELDB_DISABLE_EXCEPTIONS` and

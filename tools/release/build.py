@@ -15,6 +15,14 @@ from common import (OPTIONAL, OPTIONAL_POLICY, REPO, asset_name, context, inspec
                     require, run, sha256, stem, unpack, variants, work_root, write_json)
 
 
+MSVC_RUNTIMES = {
+    'MT': 'MultiThreaded',
+    'MTd': 'MultiThreadedDebug',
+    'MD': 'MultiThreadedDLL',
+    'MDd': 'MultiThreadedDebugDLL',
+}
+
+
 def cache_values(build):
     values = {}
     for line in (build / 'CMakeCache.txt').read_text(encoding='utf-8').splitlines():
@@ -37,7 +45,7 @@ def toolchain(spec, area, env):
     if compiler == 'msvc':
         # Let CMake choose the hosted Visual Studio generator; no setup action.
         flags += ['-A', 'x64', '-DCMAKE_MSVC_RUNTIME_LIBRARY=' +
-                  ('MultiThreadedDebug' if spec['config'] == 'Debug' else 'MultiThreaded')]
+                  MSVC_RUNTIMES[spec['crt']]]
     elif compiler == 'gcc':
         flags += ['-G', 'Unix Makefiles', '-DCMAKE_C_COMPILER=/usr/bin/gcc',
                   '-DCMAKE_CXX_COMPILER=/usr/bin/g++',
@@ -109,7 +117,7 @@ def verify_configuration(build, spec):
         require(cache.get('LEVELDB_WINDOWS_UTF8_PATHS') ==
                 ('ON' if spec['path_mode'] == 'utf8' else 'OFF'), 'Incorrect Windows path mode')
     if spec['compiler'] == 'msvc':
-        crt = 'MultiThreadedDebug' if spec['config'] == 'Debug' else 'MultiThreaded'
+        crt = MSVC_RUNTIMES[spec['crt']]
         require(cache.get('CMAKE_MSVC_RUNTIME_LIBRARY') == crt, 'Incorrect MSVC CRT cache')
         projects = list(build.glob('**/leveldb.vcxproj'))
         require(len(projects) == 1, 'MSVC project missing')

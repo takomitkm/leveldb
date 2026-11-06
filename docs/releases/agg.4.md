@@ -43,10 +43,18 @@ All release binaries explicitly disable Snappy, Zstd, external CRC32C and
 tcmalloc. Build from source with the required codecs to read compressed blocks
 written using those codecs. The built-in checksum implementation remains active.
 
-MSVC Release packages use `/MT`; Debug packages use `/MTd`. Static-library
-consumers must match the CRT and Debug/Release configuration. MinGW and Zig
-packages require their matching compiler ABI. Inspect `BUILD-INFO.json` for each
-archive's exact source, toolchain and settings.
+MSVC static packages use `/MT` for Release and `/MTd` for Debug; static-library
+consumers must match the CRT and iterator-debugging configuration. MSVC DLL
+packages use `/MD` for Release and `/MDd` for Debug, with consumers using the same
+CRT so C++ heap allocations can cross the DLL boundary safely. Release DLLs
+require the matching Microsoft Visual C++ Redistributable. Debug DLLs require
+the matching Visual Studio debug CRT, which is not included in the ordinary
+redistributable runtime. Debug and Release libraries are not interchangeable.
+Source builds leave CRT selection to the calling CMake project or toolchain;
+they do not force the release-package CRT policy.
+
+MinGW and Zig packages require their matching compiler ABI. Inspect
+`BUILD-INFO.json` for each archive's exact source, toolchain and settings.
 
 Both Windows path variants retain the existing durable rename and MANIFEST
 parent-directory flush. Directory-open/flush errors are propagated; unsupported

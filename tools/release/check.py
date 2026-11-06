@@ -7,6 +7,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import HEADERS, OPTIONAL_POLICY, REPO, asset_name, require, validate_tag, variants
+from build import toolchain
 
 
 def main():
@@ -32,8 +33,15 @@ def main():
             require('-' + spec['path_mode'] + '.' in asset_name(spec, 'agg.4'),
                     'Missing Windows path suffix')
         if spec['compiler'] == 'msvc':
-            require(spec['crt'] == ('MTd' if spec['config'] == 'Debug' else 'MT'),
-                    'MSVC CRT policy is incorrect')
+            expected_crt, expected_runtime = {
+                ('static', 'Release'): ('MT', 'MultiThreaded'),
+                ('static', 'Debug'): ('MTd', 'MultiThreadedDebug'),
+                ('dll', 'Release'): ('MD', 'MultiThreadedDLL'),
+                ('dll', 'Debug'): ('MDd', 'MultiThreadedDebugDLL'),
+            }[(spec['linkage'], spec['config'])]
+            require(spec['crt'] == expected_crt, 'MSVC CRT policy is incorrect')
+            require('-DCMAKE_MSVC_RUNTIME_LIBRARY=' + expected_runtime in
+                    toolchain(spec, REPO, {}), 'MSVC CMake runtime mapping is incorrect')
     for tag in ('agg.4', 'agg.12', 'agg.4-rc1'):
         validate_tag(tag)
     for tag in ('../agg.4', 'agg.4\n', 'agg.4;whoami', 'agg.4$(id)', '-agg.4', 'agg.x'):
@@ -54,7 +62,8 @@ def main():
     require(not re.search(r'run:.*\$\{\{', workflow), 'Workflow inputs must not enter shell source')
     print('PASS: {} Python files parse as Python 3.7 and compile; 22 unique variants (4/8/8/2).'.format(
         len(scripts)))
-    print('PASS: 15 headers, ACP/UTF8 names, MT/MTd, tag validation and workflow policy checks.')
+    print('PASS: 15 headers, ACP/UTF8 names, static MT/MTd, DLL MD/MDd and CMake runtime mappings,')
+    print('      tag validation and workflow policy checks.')
     print('Workflow YAML was inspected as text; no platform builds or runner tests were executed.')
 
 
