@@ -151,6 +151,116 @@ jobs:
           build/win_quick_leveldb_tests.log
           build/Testing/
 
+  # The optional backends (snappy, zstd, google crc32c, tcmalloc) are probes:
+  # if a probe fails for any reason the feature silently turns off and every
+  # job stays green — which is how the zstd probe (it linked the lowercase
+  # `zstd_compress`, but libzstd exports `ZSTD_compress`) went unnoticed. The
+  # regular cells install only snappy, so this cell installs all four and:
+  #   1. asserts each probe actually came out 1 (INTERNAL cache entry, not
+  #      visible via `cmake -L`, hence the direct CMakeCache.txt read);
+  #   2. asserts the built test binary is linked against all four libraries;
+  #   3. asserts the compression tests RAN (a GTEST_SKIP here is a failure).
+  # crc32c is built from source because Ubuntu has no libcrc32c-dev package.
+  optional-deps:
+    needs: quick
+    name: optional-deps (ubuntu gcc, snappy+zstd+crc32c+tcmalloc)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        submodules: true
+
+    - name: Install optional dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install libsnappy-dev libzstd-dev libgoogle-perftools-dev
+        # Ubuntu ships no libcrc32c-dev (only libcrcutil, a different
+        # library); build google/crc32c from source at a pinned commit and
+        # install it as a shared library so the link probe can see it.
+        git clone https://github.com/google/crc32c.git /tmp/crc32c-src
+        git -C /tmp/crc32c-src checkout 2bbb3be42e20a0e6c0f7b39dc07dc863d9ffbc07
+        cmake -S /tmp/crc32c-src -B /tmp/crc32c-src/build \
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+          -DCRC32C_BUILD_TESTS=OFF -DCRC32C_BUILD_BENCHMARKS=OFF \
+          -DCRC32C_USE_GLOG=OFF
+        cmake --build /tmp/crc32c-src/build --parallel
+        sudo cmake --install /tmp/crc32c-src/build
+        sudo ldconfig
+
+    - name: Generate build config
+      run: >-
+        cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build"
+        -DCMAKE_BUILD_TYPE=Debug
+        -DLEVELDB_BUILD_TESTS=ON
+        -DLEVELDB_BUILD_BENCHMARKS=OFF
+
+    - name: Assert every optional backend was detected
+      run: |
+        fail=0
+        for v in HAVE_SNAPPY HAVE_ZSTD HAVE_CRC32C HAVE_TCMALLOC; do
+          if ! grep -q "^${v}:INTERNAL=1$" build/CMakeCache.txt; then
+            echo "::error::${v} probe failed although the library is installed (silent fallback)"
+            fail=1
+          fi
+        done
+        for v in HAVE_SNAPPY HAVE_ZSTD HAVE_CRC32C; do
+          if ! grep -q "^#define ${v} 1$" build/include/port/port_config.h; then
+            echo "::error::${v} is not 1 in the generated port_config.h"
+            fail=1
+          fi
+        done
+        exit $fail
+
+    - name: Build
+      run: cmake --build build --config Debug --parallel
+
+    - name: Assert the test binary links all backends
+      run: |
+        ldd build/leveldb_tests > build/ldd.log
+        cat build/ldd.log
+        fail=0
+        for lib in libsnappy libzstd libcrc32c libtcmalloc; do
+          if ! grep -q "${lib}" build/ldd.log; then
+            echo "::error::leveldb_tests is not linked against ${lib}"
+            fail=1
+          fi
+        done
+        exit $fail
+
+    # GTEST_SKIP keeps the exit code 0, so a skipped compression case looks
+    # like a pass. With all four libraries installed every parameterization
+    # must actually execute.
+    - name: Compression tests must run, not skip
+      run: |
+        # GTest names are CompressionTests/CompressionTableTest.<case>/<param>;
+        # the pattern must match the whole name, hence the wildcards.
+        ./build/leveldb_tests --gtest_filter='*CompressionTableTest*' \
+          --gtest_color=no | tee build/compression.log
+        if grep -q 'SKIPPED' build/compression.log; then
+          echo "::error::a compression test skipped even though the codec is installed"
+          exit 1
+        fi
+        passed=$(grep -oE '\[  PASSED  \] [0-9]+ tests?' build/compression.log | grep -oE '[0-9]+' | head -1)
+        if [ "${passed:-0}" -lt 4 ]; then
+          echo "::error::expected 4 passing compression tests (2 codecs x 2 cases), got ${passed:-0}"
+          exit 1
+        fi
+
+    - name: Run Tests
+      working-directory: ${{ github.workspace }}/build
+      run: ctest -C Debug --verbose
+
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: optional-deps-logs
+        path: |
+          build/compression.log
+          build/ldd.log
+          build/Testing/
+
   # Covers the opt-in profile: the library is compiled with
   # -DLEVELDB_DISABLE_EXCEPTIONS=ON (MSVC: /EHs-c- + _HAS_EXCEPTIONS=0,
   # gcc/clang: -fno-exceptions) while the tests still build with exceptions

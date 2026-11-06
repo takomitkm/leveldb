@@ -41,13 +41,17 @@ check_include_file("unistd.h" HAVE_UNISTD_H)
 
 include(CheckLibraryExists)
 # Each can be overridden on the command line (-DHAVE_CRC32C=OFF, ...).
-# check_library_exists() only compiles its probe; under a cross toolchain
-# whose sysroot lacks the library the probe still "succeeds" and every
-# HAVE_* turns into a false positive, so cross builds should set them
-# explicitly.
+# By default check_library_exists() links a probe executable against the
+# library; some cross toolchains skip that link step (for example with
+# CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY), after which a missing
+# library can still probe as found — set the HAVE_* variables explicitly
+# in cross builds.
 check_library_exists(crc32c crc32c_value "" HAVE_CRC32C)
 check_library_exists(snappy snappy_compress "" HAVE_SNAPPY)
-check_library_exists(zstd zstd_compress "" HAVE_ZSTD)
+# The exported symbol is ZSTD_compress (capital), not zstd_compress:
+# a lowercase probe never links, so HAVE_ZSTD stayed empty even with
+# libzstd-dev installed and the zstd compression path was never compiled.
+check_library_exists(zstd ZSTD_compress "" HAVE_ZSTD)
 check_library_exists(tcmalloc malloc "" HAVE_TCMALLOC)
 
 include(CheckCXXSymbolExists)
