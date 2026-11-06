@@ -88,7 +88,8 @@ int main(int argc, char** argv) {
     leveldb::DB* raw = nullptr;
     CheckStatus(leveldb::DB::Open(options, path, &raw));
     std::unique_ptr<leveldb::DB> db(raw);
-    const std::string value("binary\0value", 12);
+    const std::string value =
+        std::string("binary\0value", 12) + std::string(4096, 'x');
     leveldb::WriteOptions write;
     write.sync = true;
     CheckStatus(db->Put(write, "release-key", value));

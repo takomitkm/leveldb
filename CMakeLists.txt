@@ -333,8 +333,8 @@ if(LEVELDB_BUILD_TESTS)
 
   # Prevent overriding the parent project's compiler/linker settings on Windows.
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  set(install_gtest OFF)
-  set(install_gmock OFF)
+  # GoogleTest uses an uppercase install option for both gtest and gmock.
+  set(INSTALL_GTEST OFF CACHE BOOL "Do not install private test dependencies" FORCE)
   set(build_gmock ON)
 
   # This project is tested using GoogleTest.
