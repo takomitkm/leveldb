@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -18,6 +19,13 @@
 
 namespace leveldb {
 namespace {
+
+void WriteLogMessage(Logger* logger, const char* format, ...) {
+  std::va_list arguments;
+  va_start(arguments, format);
+  logger->Logv(format, arguments);
+  va_end(arguments);
+}
 
 UINT TestCodePage() {
 #if LEVELDB_WINDOWS_UTF8_PATHS
@@ -129,7 +137,7 @@ TEST_F(WindowsPathTest, FilesAndLoggerUseSelectedEncoding) {
   Logger* raw_logger = nullptr;
   ASSERT_LEVELDB_OK(env_->NewLogger(path_ + "/LOG", &raw_logger));
   std::unique_ptr<Logger> logger(raw_logger);
-  Log(logger.get(), "%s", "non-ASCII path");
+  WriteLogMessage(logger.get(), "%s", "non-ASCII path");
   logger.reset();
   ASSERT_LEVELDB_OK(ReadFileToString(env_, path_ + "/LOG", &contents));
   EXPECT_NE(std::string::npos, contents.find("non-ASCII path"));
