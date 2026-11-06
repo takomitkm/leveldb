@@ -1,0 +1,94 @@
+# Copyright 2026 takomitkm. BSD-style license found in the LICENSE file.
+name: compatibility
+on:
+  push:
+    branches: [main, ci/release-agg4]
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'db/log_reader.cc'
+      - 'db/log_test.cc'
+      - 'util/env_windows.cc'
+      - 'util/windows_path_test.cc'
+      - 'tools/check_compatibility.py'
+      - '.github/workflows/compatibility.yml'
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'db/log_reader.cc'
+      - 'db/log_test.cc'
+      - 'util/env_windows.cc'
+      - 'util/windows_path_test.cc'
+      - 'tools/check_compatibility.py'
+      - '.github/workflows/compatibility.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-paths:
+    name: Windows paths (${{ matrix.encoding }})
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - encoding: acp
+            utf8: 'OFF'
+          - encoding: utf8
+            utf8: 'ON'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Configure path contract
+        shell: bash
+        env:
+          UTF8_PATHS: ${{ matrix.utf8 }}
+        run: >-
+          cmake -S . -B build -A x64
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          -DLEVELDB_WINDOWS_UTF8_PATHS="$UTF8_PATHS"
+          -DLEVELDB_BUILD_BENCHMARKS=OFF
+          -DHAVE_SNAPPY=OFF -DHAVE_ZSTD=OFF
+          -DHAVE_CRC32C=OFF -DHAVE_TCMALLOC=OFF
+      - name: Build compatibility regressions
+        run: cmake --build build --config Release --target windows_path_test --parallel 2
+      - name: Calibrate old behaviour and restore
+        env:
+          PATH_MODE: ${{ matrix.encoding }}
+        run: python tools/check_compatibility.py --build build --mode $env:PATH_MODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: path-contract-${{ matrix.encoding }}
+          path: |
+            build/*.log
+            build/*.xml
+  custom-env:
+    needs: windows-paths
+    name: Custom Env buffer contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DLEVELDB_BUILD_BENCHMARKS=OFF
+          -DHAVE_SNAPPY=OFF -DHAVE_ZSTD=OFF
+          -DHAVE_CRC32C=OFF -DHAVE_TCMALLOC=OFF
+      - name: Build
+        run: cmake --build build --target leveldb_tests --parallel 2
+      - name: Calibrate old buffer handling and restore
+        run: python3 tools/check_compatibility.py --build build --mode log-buffer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: custom-env-contract
+          path: |
+            build/*.log
+            build/*.xml

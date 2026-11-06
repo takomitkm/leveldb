@@ -38,7 +38,16 @@ namespace leveldb {
 
 namespace {
 
-std::wstring WideCharPathFromUtf8(const std::string& source) {
+UINT PathCodePage() {
+#if LEVELDB_WINDOWS_UTF8_PATHS
+  return CP_UTF8;
+#else
+  // Match the code page used by the original narrow Win32 file APIs.
+  return ::AreFileApisANSI() ? CP_ACP : CP_OEMCP;
+#endif
+}
+
+std::wstring WideCharPathFromNarrow(const std::string& source) {
   if (source.empty()) {
     // This check is important since MultiByteToWideChar uses return value
     // 0 to indicate an error condition.
@@ -55,7 +64,7 @@ std::wstring WideCharPathFromUtf8(const std::string& source) {
     // be replaced by the encoded version of U+FFDD. We prefer that here instead
     // of having the possibility of ERROR_INVALID_FLAGS being returned.
     const int out_size = MultiByteToWideChar(
-        /*CodePage=*/CP_UTF8, /*dwFlags=*/0,
+        /*CodePage=*/PathCodePage(), /*dwFlags=*/0,
         /*lpMultiByteStr=*/source.c_str(), /*cbMultiByte=*/source_len,
         /*lpWideCharStr*/wchar_buf, /*cchWideChar=*/kWCharBufSize);
     if (out_size) {
@@ -69,14 +78,14 @@ std::wstring WideCharPathFromUtf8(const std::string& source) {
   // call to calculate the necessary buffer size, heap-allocate it and then
   // call MultiByteToWideChar again passing that buffer.
   const int out_size = MultiByteToWideChar(
-      /*CodePage=*/CP_UTF8, /*dwFlags=*/0,
+      /*CodePage=*/PathCodePage(), /*dwFlags=*/0,
       /*lpMultiByteStr=*/source.c_str(), /*cbMultiByte=*/source_len,
       /*lpWideCharStr=*/nullptr, /*cchWideChar=*/0);
   assert(out_size > 0);
 
   const std::wstring out(static_cast<size_t>(out_size), '\0');
   const int final_out_size = MultiByteToWideChar(
-      /*CodePage=*/CP_UTF8, /*dwFlags=*/0,
+      /*CodePage=*/PathCodePage(), /*dwFlags=*/0,
       /*lpMultiByteStr=*/source.c_str(), /*cbMultiByte=*/source_len,
       /*lpWideCharStr=*/const_cast<wchar_t*>(out.data()),
       /*cchWideChar=*/out_size);
@@ -85,7 +94,7 @@ std::wstring WideCharPathFromUtf8(const std::string& source) {
   return out;
 }
 
-std::string WideCharPathToUtf8(const std::wstring& source) {
+std::string WideCharPathToNarrow(const std::wstring& source) {
   if (source.empty()) {
     // This check is important since WideCharToMultiByte uses return value
     // 0 to indicate an error condition.
@@ -95,14 +104,14 @@ std::string WideCharPathToUtf8(const std::wstring& source) {
 
   // When using CP_UTF8, dwFlags can only be set to 0 or WC_ERR_INVALID_CHARS.
   const int out_size = WideCharToMultiByte(
-      /*CodePage*/CP_UTF8, /*dwFlags=*/0,
+      /*CodePage=*/PathCodePage(), /*dwFlags=*/0,
       /*lpWideCharStr=*/source.c_str(), /*cchWideChar=*/source_len,
       /*lpMultiByteStr=*/0, /*cbMultiByte=*/0,
       /*lpDefaultChar=*/nullptr, /*lpUsedDefaultChar=*/nullptr);
 
   std::string out(static_cast<size_t>(out_size), '\0');
   const int final_out_size = WideCharToMultiByte(
-      /*CodePage*/ CP_UTF8, /*dwFlags=*/0,
+      /*CodePage=*/PathCodePage(), /*dwFlags=*/0,
       /*lpWideCharStr=*/source.c_str(), /*cchWideChar=*/source_len,
       /*lpMultiByteStr=*/const_cast<char *>(out.data()), /*cbMultiByte=*/out_size,
       /*lpDefaultChar=*/nullptr, /*lpUsedDefaultChar=*/nullptr);
@@ -433,7 +442,7 @@ class WindowsWritableFile : public WritableFile {
     }
 
     ScopedHandle dir(::CreateFileW(
-        WideCharPathFromUtf8(dirname_).c_str(), GENERIC_WRITE,
+        WideCharPathFromNarrow(dirname_).c_str(), GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
     if (!dir.is_valid()) {
@@ -537,7 +546,7 @@ class WindowsEnv : public Env {
     *result = nullptr;
     DWORD desired_access = GENERIC_READ;
     DWORD share_mode = FILE_SHARE_READ;
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     ScopedHandle handle = ::CreateFileW(
         wfilename.c_str(), desired_access, share_mode,
         /*lpSecurityAttributes=*/nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -555,7 +564,7 @@ class WindowsEnv : public Env {
     *result = nullptr;
     DWORD desired_access = GENERIC_READ;
     DWORD share_mode = FILE_SHARE_READ;
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     ScopedHandle handle =
         ::CreateFileW(wfilename.c_str(), desired_access, share_mode,
                       /*lpSecurityAttributes=*/nullptr, OPEN_EXISTING,
@@ -602,7 +611,7 @@ class WindowsEnv : public Env {
                          WritableFile** result) override {
     DWORD desired_access = GENERIC_WRITE;
     DWORD share_mode = 0;  // Exclusive access.
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     ScopedHandle handle = ::CreateFileW(
         wfilename.c_str(), desired_access, share_mode,
         /*lpSecurityAttributes=*/nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
@@ -620,7 +629,7 @@ class WindowsEnv : public Env {
                            WritableFile** result) override {
     DWORD desired_access = FILE_APPEND_DATA;
     DWORD share_mode = 0;  // Exclusive access.
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     ScopedHandle handle = ::CreateFileW(
         wfilename.c_str(), desired_access, share_mode,
         /*lpSecurityAttributes=*/nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
@@ -635,13 +644,13 @@ class WindowsEnv : public Env {
   }
 
   bool FileExists(const std::string& filename) override {
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     return GetFileAttributesW(wfilename.c_str()) != INVALID_FILE_ATTRIBUTES;
   }
 
   Status GetChildren(const std::string& directory_path,
                      std::vector<std::string>* result) override {
-    const std::wstring wdirectory_path = WideCharPathFromUtf8(directory_path);
+    const std::wstring wdirectory_path = WideCharPathFromNarrow(directory_path);
 
     const std::wstring find_pattern = wdirectory_path + L"\\*";
     WIN32_FIND_DATAW find_data;
@@ -659,7 +668,7 @@ class WindowsEnv : public Env {
 
       if (!_wsplitpath_s(find_data.cFileName, nullptr, 0, nullptr, 0, base_name,
                         ARRAYSIZE(base_name), ext, ARRAYSIZE(ext))) {
-        result->emplace_back(WideCharPathToUtf8(std::wstring(base_name) + ext));
+        result->emplace_back(WideCharPathToNarrow(std::wstring(base_name) + ext));
       }
     } while (::FindNextFileW(dir_handle, &find_data));
     DWORD last_error = ::GetLastError();
@@ -671,7 +680,7 @@ class WindowsEnv : public Env {
   }
 
   Status RemoveFile(const std::string& filename) override {
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     if (!::DeleteFileW(wfilename.c_str())) {
       return WindowsError(filename, ::GetLastError());
     }
@@ -679,7 +688,7 @@ class WindowsEnv : public Env {
   }
 
   Status CreateDir(const std::string& dirname) override {
-    const std::wstring wdirname = WideCharPathFromUtf8(dirname);
+    const std::wstring wdirname = WideCharPathFromNarrow(dirname);
     if (!::CreateDirectoryW(wdirname.c_str(), nullptr)) {
       return WindowsError(dirname, ::GetLastError());
     }
@@ -687,7 +696,7 @@ class WindowsEnv : public Env {
   }
 
   Status RemoveDir(const std::string& dirname) override {
-    const std::wstring wdirname = WideCharPathFromUtf8(dirname);
+    const std::wstring wdirname = WideCharPathFromNarrow(dirname);
     if (!::RemoveDirectoryW(wdirname.c_str())) {
       return WindowsError(dirname, ::GetLastError());
     }
@@ -695,7 +704,7 @@ class WindowsEnv : public Env {
   }
 
   Status GetFileSize(const std::string& filename, uint64_t* size) override {
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     WIN32_FILE_ATTRIBUTE_DATA file_attributes;
     if (!::GetFileAttributesExW(wfilename.c_str(), GetFileExInfoStandard,
                                 &file_attributes)) {
@@ -709,8 +718,8 @@ class WindowsEnv : public Env {
   }
 
   Status RenameFile(const std::string& from, const std::string& to) override {
-    const std::wstring wfrom = WideCharPathFromUtf8(from);
-    const std::wstring wto = WideCharPathFromUtf8(to);
+    const std::wstring wfrom = WideCharPathFromNarrow(from);
+    const std::wstring wto = WideCharPathFromNarrow(to);
     // MOVEFILE_REPLACE_EXISTING covers both the "target absent" and the
     // "target exists" cases in one atomic operation, so the separate
     // MoveFile/ReplaceFile dance (and ReplaceFile's
@@ -727,7 +736,7 @@ class WindowsEnv : public Env {
   }
 
   Status LockFile(const std::string& filename, FileLock** lock) override {
-    const std::wstring wfilename = WideCharPathFromUtf8(filename);
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
     *lock = nullptr;
     Status result;
     ScopedHandle handle = ::CreateFileW(
@@ -765,18 +774,21 @@ class WindowsEnv : public Env {
   }
 
   Status GetTestDirectory(std::string* result) override {
-    const char* env = getenv("TEST_TMPDIR");
-    if (env && env[0] != '\0') {
-      *result = env;
+    const wchar_t* env = _wgetenv(L"TEST_TMPDIR");
+    if (env && env[0] != L'\0') {
+      *result = WideCharPathToNarrow(env);
       return Status::OK();
     }
 
-    char tmp_path[MAX_PATH];
-    if (!GetTempPathA(ARRAYSIZE(tmp_path), tmp_path)) {
-      return WindowsError("GetTempPath", ::GetLastError());
+    wchar_t tmp_path[MAX_PATH];
+    const DWORD length = GetTempPathW(ARRAYSIZE(tmp_path), tmp_path);
+    if (length == 0 || length >= ARRAYSIZE(tmp_path)) {
+      return WindowsError("GetTempPath", length == 0 ? ::GetLastError()
+                                                   : ERROR_INSUFFICIENT_BUFFER);
     }
     std::stringstream ss;
-    ss << tmp_path << "leveldbtest-" << std::this_thread::get_id();
+    ss << WideCharPathToNarrow(tmp_path) << "leveldbtest-"
+       << std::this_thread::get_id();
     *result = ss.str();
 
     // Directory may already exist
@@ -787,7 +799,8 @@ class WindowsEnv : public Env {
   Status NewLogger(const std::string& filename, Logger** result) override {
     // Append like the POSIX O_APPEND logger so the LOG file survives
     // re-opening; "N" keeps the handle non-inheritable.
-    std::FILE* fp = std::fopen(filename.c_str(), "aN");
+    const std::wstring wfilename = WideCharPathFromNarrow(filename);
+    std::FILE* fp = _wfopen(wfilename.c_str(), L"aN");
     if (fp == nullptr) {
       *result = nullptr;
       return WindowsError(filename, ::GetLastError());

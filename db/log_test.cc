@@ -170,7 +170,70 @@ class LogTest : public testing::Test {
     delete offset_reader;
   }
 
+  void CheckReadFromReusedBuffer(size_t max_per_read) {
+    const std::string records[] = {
+        "first", BigString("medium", kBlockSize / 2), "",
+        BigString(std::string("\x00\x01\x7f\x80\xff", 5), 2 * kBlockSize + 123),
+        "last"};
+    for (const std::string& record : records) {
+      Write(record);
+    }
+
+    ReusingBufferSource source(Slice(dest_.contents_), max_per_read);
+    Reader reader(&source, &report_, true /*checksum*/, 0 /*initial_offset*/);
+    Slice record;
+    std::string scratch;
+    for (const std::string& expected : records) {
+      ASSERT_TRUE(reader.ReadRecord(&record, &scratch));
+      ASSERT_EQ(expected, record.ToString());
+    }
+    ASSERT_FALSE(reader.ReadRecord(&record, &scratch));
+    ASSERT_GE(source.read_count(), 3);
+    ASSERT_GT(source.read_count(), kBlockSize / max_per_read);
+    ASSERT_EQ(0, DroppedBytes());
+    ASSERT_EQ("", ReportMessage());
+  }
+
  private:
+  // Returns data outside scratch, overwriting the same buffer on every read.
+  class ReusingBufferSource : public SequentialFile {
+   public:
+    ReusingBufferSource(const Slice& contents, size_t max_per_read)
+        : contents_(contents), max_per_read_(max_per_read), read_count_(0) {}
+
+    Status Read(size_t n, Slice* result, char* scratch) override {
+      ++read_count_;
+      // Clobber previous results even on EOF, and make ignoring *result fail
+      // deterministically instead of depending on uninitialized scratch data.
+      std::memset(buffer_, 0xa5, sizeof(buffer_));
+      std::memset(scratch, 0, n);
+      n = std::min(n, std::min(max_per_read_, contents_.size()));
+      if (n > 0) {
+        std::memcpy(buffer_, contents_.data(), n);
+      }
+      *result = Slice(buffer_, n);
+      contents_.remove_prefix(n);
+      return Status::OK();
+    }
+
+    Status Skip(uint64_t n) override {
+      if (n > contents_.size()) {
+        contents_.clear();
+        return Status::NotFound("in-memory file skipped past end");
+      }
+      contents_.remove_prefix(static_cast<size_t>(n));
+      return Status::OK();
+    }
+
+    size_t read_count() const { return read_count_; }
+
+   private:
+    Slice contents_;
+    const size_t max_per_read_;
+    size_t read_count_;
+    char buffer_[kBlockSize];
+  };
+
   class StringDest : public WritableFile {
    public:
     Status Close() override { return Status::OK(); }
@@ -337,6 +400,10 @@ TEST(PartialReadSourceTest, LogReaderRetriesShortReads) {
   ASSERT_EQ(2 * kBlockSize, record.size());
   ASSERT_FALSE(reader.ReadRecord(&record, &scratch));
 }
+
+TEST_F(LogTest, ReadFromReusedBuffer) { CheckReadFromReusedBuffer(kBlockSize); }
+
+TEST_F(LogTest, ShortReadsFromReusedBuffer) { CheckReadFromReusedBuffer(1000); }
 
 TEST_F(LogTest, Empty) { ASSERT_EQ("EOF", Read()); }
 

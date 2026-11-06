@@ -35,6 +35,7 @@ option(LEVELDB_BUILD_BENCHMARKS "Build LevelDB's benchmarks" ON)
 option(LEVELDB_INSTALL "Install LevelDB's header and library" ON)
 option(LEVELDB_DISABLE_EXCEPTIONS "Build LevelDB without C++ exceptions" OFF)
 option(LEVELDB_DISABLE_RTTI "Disable Rtti" OFF)
+option(LEVELDB_WINDOWS_UTF8_PATHS "Interpret Windows paths as UTF-8 instead of the file API code page" ON)
 
 include(CheckIncludeFile)
 check_include_file("unistd.h" HAVE_UNISTD_H)
@@ -240,6 +241,8 @@ target_sources(leveldb
 )
 
 if (WIN32)
+  target_compile_definitions(leveldb PRIVATE
+    LEVELDB_WINDOWS_UTF8_PATHS=$<BOOL:${LEVELDB_WINDOWS_UTF8_PATHS}>)
   target_sources(leveldb
     PRIVATE
       "util/env_windows.cc"
@@ -427,6 +430,11 @@ if(LEVELDB_BUILD_TESTS)
   endfunction(leveldb_test)
 
   leveldb_test("db/c_test.c")
+  if(WIN32)
+    leveldb_test("util/windows_path_test.cc")
+    target_compile_definitions(windows_path_test PRIVATE
+      LEVELDB_WINDOWS_UTF8_PATHS=$<BOOL:${LEVELDB_WINDOWS_UTF8_PATHS}>)
+  endif(WIN32)
 
   if(NOT BUILD_SHARED_LIBS)
     # TODO(costan): This test also uses
