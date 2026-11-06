@@ -15,6 +15,7 @@ def main():
     event_sha = validate_sha(os.environ.get('GITHUB_SHA', ''))
     def resolve(ref):
         return subprocess.check_output(['git', 'rev-parse', ref], cwd=str(REPO),
+                                       stderr=subprocess.STDOUT,
                                        universal_newlines=True).strip()
     sha = validate_sha(resolve('HEAD'))
     require(resolve(event_sha + '^{commit}') == sha, 'Checkout differs from the event commit')

@@ -33,7 +33,13 @@ def execute_main(main):
     try:
         main()
     except Exception as error:
-        report_error('{}: {}'.format(type(error).__name__, error))
+        details = '{}: {}'.format(type(error).__name__, error)
+        output = getattr(error, 'output', None)
+        if output:
+            if isinstance(output, bytes):
+                output = output.decode('utf-8', errors='replace')
+            details += '\n' + output
+        report_error(details)
         raise
 
 

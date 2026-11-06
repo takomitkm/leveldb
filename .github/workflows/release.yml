@@ -86,6 +86,11 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Trust checkout mounted inside the container
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third_party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third_party/benchmark"
       - name: Validate source and version
         run: python3 -I tools/release/identity.py
       - name: Provision verified Kitware CMake and target tools
