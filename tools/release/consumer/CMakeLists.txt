@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.22)
+project(leveldb_release_consumer LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT DEFINED LEVELDB_RELEASE_PREFIX)
+  message(FATAL_ERROR "An extracted release prefix is required")
+endif()
+find_package(leveldb CONFIG REQUIRED
+  PATHS "${LEVELDB_RELEASE_PREFIX}/lib/cmake/leveldb" NO_DEFAULT_PATH)
+add_executable(release_smoke smoke.cc)
+target_link_libraries(release_smoke PRIVATE leveldb::leveldb)
+target_compile_definitions(release_smoke PRIVATE
+  RELEASE_UTF8_PATHS=$<BOOL:${RELEASE_UTF8_PATHS}>)
+if(MSVC)
+  target_compile_options(release_smoke PRIVATE /EHsc /GR)
+endif()

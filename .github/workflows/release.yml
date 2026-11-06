@@ -1,0 +1,266 @@
+name: release
+
+on:
+  push:
+    branches: [ci/release-agg4]
+    tags: ['agg.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to validate (never publishes from dispatch)'
+        required: true
+        default: agg.4
+        type: string
+
+# The sole job with write access is publish. Builds and previews cannot publish.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version || 'agg.4' }}
+  RELEASE_SHA: ${{ github.sha }}
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  linux:
+    name: Linux GCC 8 / ${{ matrix.arch }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: x86
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: debian:buster
+    timeout-minutes: 90
+    env:
+      RELEASE_ARCH: ${{ matrix.arch }}
+      DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # This static bootstrap runs before checkout: the base container has no git/python.
+      # No workflow input is expanded into a shell command.
+      - name: Install Debian 10 build prerequisites
+        run: |
+          printf '%s\n' 'deb http://archive.debian.org/debian buster main' > /etc/apt/sources.list
+          rm -f /etc/apt/sources.list.d/*
+          printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive
+          apt-get -o Acquire::Check-Valid-Until=false update
+          apt-get -y install --no-install-recommends git g++ make ca-certificates python3 curl xz-utils
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate source and version
+        run: python3 -I tools/release/identity.py
+      - name: Provision verified Kitware CMake and target tools
+        run: python3 -I tools/release/bootstrap.py --family linux
+      - name: Build, test, install and reconsume archives
+        run: python3 -I tools/release/build.py --family linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bin-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/leveldb-release/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/leveldb-release/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  msvc:
+    name: Windows x64 MSVC / eight variants
+    needs: linux
+    permissions:
+      contents: read
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate source and version
+        run: python -I tools/release/identity.py
+      - name: Locate hosted CMake
+        run: python -I tools/release/bootstrap.py --family msvc
+      - name: Build and reconsume static/DLL Debug/Release ACP/UTF8
+        run: python -I tools/release/build.py --family msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bin-msvc
+          path: ${{ runner.temp }}/leveldb-release/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs-msvc
+          path: ${{ runner.temp }}/leveldb-release/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  mingw:
+    name: Windows x64/x86 MinGW / eight variants
+    needs: msvc
+    permissions:
+      contents: read
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate source and version
+        run: python -I tools/release/identity.py
+      - name: Provision UCRT64 and i686 compilers with hosted pacman
+        run: python -I tools/release/bootstrap.py --family mingw
+      - name: Build and reconsume x64/x86 Debug/Release ACP/UTF8
+        run: python -I tools/release/build.py --family mingw
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bin-mingw
+          path: ${{ runner.temp }}/leveldb-release/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs-mingw
+          path: ${{ runner.temp }}/leveldb-release/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  zig:
+    name: Native Windows ARM64 Zig / two variants
+    needs: mingw
+    permissions:
+      contents: read
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate source and version
+        run: python -I tools/release/identity.py
+      - name: Download and verify official ARM64 Zig
+        run: python -I tools/release/bootstrap.py --family zig
+      - name: Build and run native ARM64 Release ACP/UTF8
+        run: python -I tools/release/build.py --family zig
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bin-zig
+          path: ${{ runner.temp }}/leveldb-release/artifacts/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs-zig
+          path: ${{ runner.temp }}/leveldb-release/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  validate:
+    name: Verify complete 22-archive release
+    needs: zig
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source and version
+        run: python3 -I tools/release/identity.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-bin-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-input
+      - name: Verify manifests, layouts, metadata and checksums without publishing
+        run: python3 -I tools/release/publish.py --artifacts "$RUNNER_TEMP/release-input" --verify-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-validation
+          path: |
+            ${{ runner.temp }}/leveldb-release/SHA256SUMS
+            ${{ runner.temp }}/leveldb-release/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish:
+    name: Publish verified tag through a draft
+    needs: validate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agg.')
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source and version
+        run: python3 -I tools/release/identity.py
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-bin-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-input
+      - name: Reverify, create draft, upload, verify server bytes and publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 -I tools/release/publish.py --artifacts "$RUNNER_TEMP/release-input"
+      - name: Upload publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-publication-logs
+          path: ${{ runner.temp }}/leveldb-release/logs/
+          if-no-files-found: warn
+          retention-days: 14
