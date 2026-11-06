@@ -29,10 +29,26 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options,
     }
 
     TableBuilder* builder = new TableBuilder(options, file);
-    meta->smallest.DecodeFrom(iter->key());
+    if (!meta->smallest.DecodeFrom(iter->key())) {
+      // The first input key is not a well-formed internal key; reject it
+      // instead of building a table around a corrupt smallest key.
+      delete builder;
+      file->Close();
+      delete file;
+      env->RemoveFile(fname);
+      return Status::Corruption("invalid internal key in BuildTable input");
+    }
     Slice key;
+    ParsedInternalKey parsed;
     for (; iter->Valid(); iter->Next()) {
       key = iter->key();
+      if (!ParseInternalKey(key, &parsed)) {
+        delete builder;
+        file->Close();
+        delete file;
+        env->RemoveFile(fname);
+        return Status::Corruption("invalid internal key in BuildTable input");
+      }
       builder->Add(key, iter->value());
     }
     if (!key.empty()) {
