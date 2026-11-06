@@ -337,8 +337,15 @@ if(LEVELDB_BUILD_TESTS)
   set(INSTALL_GTEST OFF CACHE BOOL "Do not install private test dependencies" FORCE)
   set(build_gmock ON)
 
-  # This project is tested using GoogleTest.
-  add_subdirectory("third_party/googletest")
+  # Test dependencies stay private and static even when LevelDB is a DLL.
+  # In particular, test executables must not require gtest DLLs from another
+  # build directory at startup.
+  function(leveldb_test_dependencies)
+    set(BUILD_SHARED_LIBS OFF)
+    set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+    add_subdirectory("third_party/googletest")
+  endfunction()
+  leveldb_test_dependencies()
 
   # GoogleTest triggers a missing field initializers warning.
   if(LEVELDB_HAVE_NO_MISSING_FIELD_INITIALIZERS)

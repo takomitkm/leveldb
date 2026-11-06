@@ -50,8 +50,7 @@ jobs:
 
   linux:
     name: Linux GCC 8 / ${{ matrix.arch }}
-    needs: prepare
-    if: needs.prepare.outputs.run_id == ''
+    needs: msvc
     permissions:
       contents: read
     strategy:
@@ -139,7 +138,8 @@ jobs:
 
   msvc:
     name: Windows x64 MSVC / eight variants
-    needs: linux
+    needs: prepare
+    if: needs.prepare.outputs.run_id == ''
     permissions:
       contents: read
     runs-on: windows-2025
@@ -177,7 +177,7 @@ jobs:
 
   mingw:
     name: Windows x64/x86 MinGW / eight variants
-    needs: msvc
+    needs: linux
     permissions:
       contents: read
     runs-on: windows-2025

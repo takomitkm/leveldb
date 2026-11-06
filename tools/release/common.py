@@ -70,7 +70,7 @@ def variants(family=None, arch=None):
         add('linux', architecture, 'gcc', 'static', 'Release')
         if architecture == 'x64':
             add('linux', architecture, 'gcc', 'shared', 'Release')
-    for linkage in ('static', 'dll'):
+    for linkage in ('dll', 'static'):
         for config in ('Debug', 'Release'):
             for mode in ('acp', 'utf8'):
                 add('windows', 'x64', 'msvc', linkage, config, mode)
@@ -127,7 +127,11 @@ def run(args, log, cwd=REPO, env=None, timeout=3600):
     text = log.read_text(encoding='utf-8', errors='replace')
     if process.returncode:
         print(text[-12000:], flush=True)
-        report_error('Command failed ({}) -- {}\n{}'.format(process.returncode, log.name, text[-8000:]))
+        errors = [line for line in text.splitlines() if re.search(
+            r'(?i)\b(error|fatal|failed|undefined)\b|\bLNK[0-9]+\b', line)]
+        details = '\n'.join(errors[-12:]) if errors else text[-2400:]
+        report_error('Command failed ({}) -- {}\n{}'.format(
+            process.returncode, log.name, details[-2800:]))
         raise RuntimeError('Command failed ({}) -- {}'.format(process.returncode, log))
     return text
 
