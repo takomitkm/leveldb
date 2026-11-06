@@ -163,9 +163,16 @@ jobs:
   # crc32c is built from source because Ubuntu has no libcrc32c-dev package.
   optional-deps:
     needs: quick
-    name: optional-deps (ubuntu gcc, snappy+zstd+crc32c+tcmalloc)
+    name: optional-deps (ubuntu gcc ${{ matrix.build_type }}, snappy+zstd+crc32c+tcmalloc)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      # Release exposes different compiler behaviour (NDEBUG disables
+      # asserts, -O2 enables inlining, UB can surface only when optimised),
+      # so the same assertions run in both configurations.
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
     steps:
     - uses: actions/checkout@v5
       with:
@@ -191,7 +198,7 @@ jobs:
     - name: Generate build config
       run: >-
         cmake -S "${{ github.workspace }}" -B "${{ github.workspace }}/build"
-        -DCMAKE_BUILD_TYPE=Debug
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DLEVELDB_BUILD_TESTS=ON
         -DLEVELDB_BUILD_BENCHMARKS=OFF
 
@@ -213,7 +220,7 @@ jobs:
         exit $fail
 
     - name: Build
-      run: cmake --build build --config Debug --parallel
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel
 
     - name: Assert the test binary links all backends
       run: |
@@ -249,13 +256,13 @@ jobs:
 
     - name: Run Tests
       working-directory: ${{ github.workspace }}/build
-      run: ctest -C Debug --verbose
+      run: ctest -C ${{ matrix.build_type }} --verbose
 
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: optional-deps-logs
+        name: optional-deps-logs-${{ matrix.build_type }}
         path: |
           build/compression.log
           build/ldd.log
