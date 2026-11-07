@@ -5,6 +5,7 @@
 #include "table/format.h"
 
 #include <cstring>
+#include <limits>
 #include <string>
 
 #include "gtest/gtest.h"
@@ -196,6 +197,36 @@ TEST(ReadBlockIssue1349Test, ReportsAllocationFailureForHugeRawRead) {
   BlockHandle handle;
   handle.set_offset(0);
   handle.set_size((size_t(1) << 60) - kBlockTrailerSize);
+  StringSource1349 source("");
+  ReadOptions options;
+  BlockContents out;
+  Status s = ReadBlock(&source, options, handle, &out);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
+  EXPECT_FALSE(out.heap_allocated);
+}
+
+// A handle size of SIZE_MAX makes size + kBlockTrailerSize wrap around: the
+// handle must be rejected as bad before any arithmetic result is used.
+TEST(ReadBlockIssue1349Test, RejectsHandleSizeThatWrapsWithTrailer) {
+  BlockHandle handle;
+  handle.set_offset(0);
+  handle.set_size(std::numeric_limits<size_t>::max());
+  StringSource1349 source("");
+  ReadOptions options;
+  BlockContents out;
+  Status s = ReadBlock(&source, options, handle, &out);
+  EXPECT_TRUE(s.IsCorruption()) << s.ToString();
+  EXPECT_NE(std::string::npos, s.ToString().find("bad block handle"));
+  EXPECT_FALSE(out.heap_allocated);
+}
+
+// The largest size that does not wrap with the trailer still cannot be
+// allocated: it must be reported through the allocation-failure path rather
+// than attempted by the file.
+TEST(ReadBlockIssue1349Test, RejectsLargestNonWrappingHandleSize) {
+  BlockHandle handle;
+  handle.set_offset(0);
+  handle.set_size(std::numeric_limits<size_t>::max() - kBlockTrailerSize);
   StringSource1349 source("");
   ReadOptions options;
   BlockContents out;

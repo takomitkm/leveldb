@@ -203,6 +203,70 @@ TEST(Coding, Varint64Truncation) {
   ASSERT_EQ(large_value, result);
 }
 
+// A failed decode must leave both the input Slice and the output value
+// untouched, while a successful decode advances the input exactly past the
+// varint - block and MANIFEST parsing rely on both halves of the contract.
+TEST(Coding, Varint32FailureLeavesInputAndOutputUntouched) {
+  // Overflows in the last byte (2^32) and truncation must both fail.
+  std::string overflow("\x80\x80\x80\x80\x10\x7f");
+  for (const std::string& input : {overflow, std::string("\x80\x80", 2)}) {
+    Slice slice(input);
+    uint32_t result = 42;
+    ASSERT_FALSE(GetVarint32(&slice, &result)) << input.size();
+    EXPECT_EQ(42, result);
+    EXPECT_EQ(input.data(), slice.data());
+    EXPECT_EQ(input.size(), slice.size());
+  }
+}
+
+TEST(Coding, Varint32SuccessAdvancesExactlyPastTheEncoding) {
+  char buffer[6] = {'\xff', '\xff', '\xff', '\xff', '\x0f', 'X'};
+  Slice slice(buffer, sizeof(buffer));
+  uint32_t result = 0;
+  ASSERT_TRUE(GetVarint32(&slice, &result));
+  EXPECT_EQ(std::numeric_limits<uint32_t>::max(), result);
+  EXPECT_EQ(1u, slice.size());  // Only the trailing 'X' is left.
+  EXPECT_EQ(buffer + 5, slice.data());
+}
+
+TEST(Coding, Varint64FailureLeavesInputAndOutputUntouched) {
+  std::string overflow("\x80\x80\x80\x80\x80\x80\x80\x80\x80\x02\x7f");
+  for (const std::string& input :
+       {overflow, std::string("\x80\x80\x80\x80\x80", 5)}) {
+    Slice slice(input);
+    uint64_t result = 42;
+    ASSERT_FALSE(GetVarint64(&slice, &result)) << input.size();
+    EXPECT_EQ(42, result);
+    EXPECT_EQ(input.data(), slice.data());
+    EXPECT_EQ(input.size(), slice.size());
+  }
+}
+
+// Redundant continuation bytes that still encode an in-range value are
+// legal: decoders must accept them and consume exactly their length.
+TEST(Coding, VarintAcceptsNonCanonicalEncodings) {
+  struct Case {
+    const char* bytes;
+    size_t length;
+    uint64_t value;
+  };
+  const Case cases[] = {
+      {"\x80\x00", 2, 0},                              // 0 in two bytes
+      {"\x80\x80\x80\x80\x00", 5, 0},                  // 0 in five bytes
+      {"\x80\x80\x80\x80\x80\x80\x80\x80\x80\x00", 10, 0},  // 0 in ten bytes
+      {"\x81\x00", 2, 1},                              // 1 in two bytes
+  };
+  for (const Case& c : cases) {
+    std::string buffer(c.bytes, c.length);
+    buffer.push_back('E');  // A marker byte to prove the exact advance.
+    Slice slice(buffer);
+    uint64_t result = 99;
+    ASSERT_TRUE(GetVarint64(&slice, &result)) << c.length;
+    EXPECT_EQ(c.value, result) << c.length;
+    EXPECT_EQ(1u, slice.size()) << c.length;  // Only the marker is left.
+  }
+}
+
 TEST(Coding, Strings) {
   std::string s;
   PutLengthPrefixedSlice(&s, Slice(""));
