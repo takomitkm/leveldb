@@ -315,6 +315,14 @@ class Repairer {
     Iterator* iter = NewTableIterator(t.meta);
     int counter = 0;
     ParsedInternalKey parsed;
+    // Recompute the metadata from the records that actually make it into the
+    // rebuilt table: ScanTable() may have bailed out on a transient I/O error
+    // before collecting anything, leaving t's boundaries empty and its
+    // sequence number at zero.  Publishing those stale values would trip the
+    // InternalKey encode assert (or write an empty boundary in release).
+    t.meta.smallest.Clear();
+    t.meta.largest.Clear();
+    t.max_sequence = 0;
     for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
       Slice key = iter->key();
       if (!ParseInternalKey(key, &parsed)) {
@@ -327,6 +335,13 @@ class Repairer {
       }
       builder->Add(iter->key(), iter->value());
       counter++;
+      if (counter == 1) {
+        t.meta.smallest.DecodeFrom(key);
+      }
+      t.meta.largest.DecodeFrom(key);
+      if (parsed.sequence > t.max_sequence) {
+        t.max_sequence = parsed.sequence;
+      }
     }
     delete iter;
 
