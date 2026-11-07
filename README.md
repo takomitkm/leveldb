@@ -224,6 +224,25 @@
 > 4 GiB block ([8c226e0](https://github.com/takomitkm/leveldb/commit/8c226e0),
 > table D), so every guard in the wave now has targeted coverage.
 >
+> **Isolated verification against the upstream PR branches (2026-11-08):**
+> the four follow-up fixes above were re-verified on the community PRs'
+> own code, in isolation from this fork's other changes — for each of
+> [#1335](https://github.com/google/leveldb/pull/1335),
+> [#1340](https://github.com/google/leveldb/pull/1340),
+> [#1344](https://github.com/google/leveldb/pull/1344) and
+> [#1354](https://github.com/google/leveldb/pull/1354): google/leveldb
+> `main` + the PR applied verbatim + the regression tests reproduces each
+> defect (red: assert aborts and/or failed tests), and adding the
+> corresponding fix alone turns them green with the rest of the suite
+> passing. Two of this fork's guard-tests necessarily fail on a tree that
+> lacks their guards (`OversizedBlockHandle`,
+> `Harness.RejectsOverflowingEntryLengths` on the #1340 tree — their guards
+> live in other commits and are excluded there). The #1354 tree additionally
+> needs `-DHAVE_ZSTD=ON`: upstream's probe still looks for the lowercase
+> `zstd_compress` symbol and silently disables zstd (see
+> [a34d62a](https://github.com/takomitkm/leveldb/commit/a34d62a)), so the
+> PR's own zstd tests skip without it.
+>
 > **How the Windows side was audited:** `env_posix.cc` and `env_windows.cc`
 > were read side by side; every behavioural difference found is either in
 > table A (fixed here), table B (documented, left open) or the "checked and
