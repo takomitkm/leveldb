@@ -84,7 +84,12 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   if (n != handle.size() || n + kBlockTrailerSize < n) {
     return Status::Corruption("bad block handle");
   }
-  char* buf = new char[n + kBlockTrailerSize];
+  // Report allocation failure like the decompression buffers below instead
+  // of letting std::bad_alloc escape through a Status-returning interface.
+  char* buf = new (std::nothrow) char[n + kBlockTrailerSize];
+  if (buf == nullptr) {
+    return Status::Corruption("raw block buffer allocation failed");
+  }
   Slice contents;
   Status s = file->Read(handle.offset(), n + kBlockTrailerSize, &contents, buf);
   if (!s.ok()) {
