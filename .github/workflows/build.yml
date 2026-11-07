@@ -254,6 +254,26 @@ jobs:
           exit 1
         fi
 
+    # The ReadBlockIssue1349Test suite carries the compression-aware
+    # hardening (3 snappy cases, 6 zstd cases, 3 codec-independent cases).
+    # This job is the only place those zstd cases execute at all — the other
+    # jobs install only snappy and GTEST_SKIP them — so a skip here would
+    # mean the hardening is shipping untested. Same discipline as the step
+    # above: the run must show no SKIPPED and an exact passed count.
+    - name: Read-block hardening tests must run, not skip
+      run: |
+        ./build/leveldb_tests --gtest_filter='*ReadBlockIssue1349Test*' \
+          --gtest_color=no | tee build/read_block_hardening.log
+        if grep -q 'SKIPPED' build/read_block_hardening.log; then
+          echo "::error::a ReadBlockIssue1349Test case skipped even though the codecs are installed"
+          exit 1
+        fi
+        passed=$(grep -oE '\[  PASSED  \] [0-9]+ tests?' build/read_block_hardening.log | grep -oE '[0-9]+' | head -1)
+        if [ "${passed:-0}" -ne 12 ]; then
+          echo "::error::expected 12 passing ReadBlockIssue1349Test cases (3 snappy + 6 zstd + 3 codec-independent), got ${passed:-0}"
+          exit 1
+        fi
+
     - name: Run Tests
       working-directory: ${{ github.workspace }}/build
       run: ctest -C ${{ matrix.build_type }} --verbose
@@ -265,6 +285,7 @@ jobs:
         name: optional-deps-logs-${{ matrix.build_type }}
         path: |
           build/compression.log
+          build/read_block_hardening.log
           build/ldd.log
           build/Testing/
 
