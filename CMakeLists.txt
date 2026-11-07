@@ -65,22 +65,28 @@ check_cxx_symbol_exists(fdatasync "unistd.h" HAVE_FDATASYNC)
 check_cxx_symbol_exists(F_FULLFSYNC "fcntl.h" HAVE_FULLFSYNC)
 check_cxx_symbol_exists(O_CLOEXEC "fcntl.h" HAVE_O_CLOEXEC)
 
-# Exception/RTTI settings are applied to leveldb's own targets only, not
-# directory-wide: add_compile_options() here would also hit benchmarks like
-# db_bench_tree_db, whose system headers (Kyoto Cabinet) need exceptions.
+# Compiler flags (-fno-exceptions/-fno-rtti//EHs-c-/GR-) are applied to
+# leveldb's own targets only, not directory-wide: add_compile_options() here
+# would also hit benchmarks like db_bench_tree_db, whose system headers
+# (Kyoto Cabinet) need exception handling.
 # Exceptions stay on by default so the library matches how consumers build
 # against the public headers (their STL is compiled with _HAS_EXCEPTIONS=1);
 # -DLEVELDB_DISABLE_EXCEPTIONS=ON opts out for codebases that disable
-# exceptions project-wide (on MSVC this also sets _HAS_EXCEPTIONS=0 so the
-# STL implementation agrees with /EHs-c-).
+# exceptions project-wide. On MSVC that also sets _HAS_EXCEPTIONS=0, and that
+# definition has to be directory-wide rather than target-scoped: the STL
+# headers are inlined into every TU in this directory, so a library built with
+# 0 next to tests/benchmarks built with 1 would give the same inline functions
+# two different definitions (ODR violation, linker picks one arbitrarily).
+# Directory properties do not propagate upwards, so add_subdirectory()
+# consumers are still left alone.
 set(LEV_EL_NO_EH "")
 set(LEV_EL_NO_RTTI "")
-set(LEV_EL_EH_DEFS "")
 if(LEVELDB_DISABLE_EXCEPTIONS)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    # Disable C++ exceptions.
+    # Disable C++ exceptions. The STL macro is directory-wide on purpose; see
+    # the note above about ODR.
     set(LEV_EL_NO_EH /EHs-c-)
-    set(LEV_EL_EH_DEFS _HAS_EXCEPTIONS=0)
+    add_compile_definitions(_HAS_EXCEPTIONS=0)
   else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     # Disable C++ exceptions.
     set(LEV_EL_NO_EH -fno-exceptions)
@@ -145,9 +151,10 @@ include(GNUInstallDirs)
 
 add_library(leveldb "")
 # leveldb honors the LEVELDB_DISABLE_* options above; other targets in this
-# directory (benchmarks, tests) keep the compiler defaults.
+# directory (benchmarks, tests) keep the compiler defaults. When set,
+# _HAS_EXCEPTIONS is a directory-level definition for ODR reasons; see the
+# note near the options at the top.
 target_compile_options(leveldb PRIVATE ${LEV_EL_NO_EH} ${LEV_EL_NO_RTTI})
-target_compile_definitions(leveldb PRIVATE ${LEV_EL_EH_DEFS})
 target_sources(leveldb
   PRIVATE
     "${PROJECT_BINARY_DIR}/${LEVELDB_PORT_CONFIG_DIR}/port_config.h"
