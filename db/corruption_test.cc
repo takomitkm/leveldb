@@ -167,6 +167,8 @@ class CorruptionTest : public testing::Test {
     }
   }
 
+  const std::string& dbname() const { return dbname_; }
+
   // Return the ith key
   Slice Key(int i, std::string* storage) {
     char buf[100];
@@ -340,6 +342,81 @@ TEST_F(CorruptionTest, CompactionInputErrorParanoid) {
   std::string tmp1, tmp2;
   Status s = db_->Put(WriteOptions(), Key(5, &tmp1), Value(5, &tmp2));
   ASSERT_TRUE(!s.ok()) << "write did not fail in corrupted paranoid db";
+}
+
+TEST_F(CorruptionTest, CompactionFailsOnInvalidInternalKey) {
+  // Build one table holding four valid records, then flip the value type of
+  // its first record (Key(0)@1) from 1 to 2.  The record stays physically
+  // complete (same length, intact CRC): only ParseInternalKey rejects it,
+  // which is exactly the case a compaction must not silently drop.  The
+  // first record is the one to corrupt because block entries prefix-compress
+  // against their predecessor: only the first entry after a restart stores
+  // the full key, so it is the only one whose bytes can be located reliably
+  // from outside.  Compression is off so the surgery can find the record.
+  options_.compression = kNoCompression;
+  Reopen();
+  Build(4);
+  // On an empty DB the flush output lands at L2 directly (the memtable
+  // output is pushed down while nothing overlaps), so the table sits at L2.
+  reinterpret_cast<DBImpl*>(db_)->TEST_CompactMemTable();
+
+  std::vector<std::string> filenames;
+  ASSERT_LEVELDB_OK(env_.target()->GetChildren(dbname(), &filenames));
+  std::string table_fname;
+  for (const std::string& filename : filenames) {
+    uint64_t number;
+    FileType type;
+    if (ParseFileName(filename, &number, &type) && type == kTableFile) {
+      ASSERT_TRUE(table_fname.empty()) << "expected exactly one table file";
+      table_fname = dbname() + "/" + filename;
+    }
+  }
+  ASSERT_FALSE(table_fname.empty());
+
+  std::string contents;
+  ASSERT_LEVELDB_OK(ReadFileToString(env_.target(), table_fname, &contents));
+  // The key is Key(0) ("%016d" format) followed by the 8-byte tag whose
+  // first byte is the value type (1).  Values are printable ASCII, so this
+  // pattern can only occur in the data entry itself.
+  std::string marker_storage;
+  const std::string marker =
+      Key(0, &marker_storage).ToString() + std::string(1, '\x01');
+  size_t hits = 0;
+  for (size_t pos = contents.find(marker); pos != std::string::npos;
+       pos = contents.find(marker, pos + 1)) {
+    ++hits;
+  }
+  ASSERT_EQ(1, hits);
+  const size_t type_pos = contents.find(marker) + marker.size() - 1;
+  contents[type_pos] = '\x02';
+  ASSERT_LEVELDB_OK(WriteStringToFile(env_.target(), contents, table_fname));
+
+  Reopen();
+  // The MANIFEST stores its own copy of the table boundaries, both of which
+  // are still well-formed, so the DB opens.  Key(2) reads fine because its
+  // record is untouched.
+  std::string key_storage, value_storage;
+  ASSERT_LEVELDB_OK(
+      db_->Get(ReadOptions(), Key(2, &key_storage), &value_storage));
+
+  // A compaction over the corrupted table must fail instead of silently
+  // dropping the record: the source table survives, and the error surfaces
+  // as a background error.  Manual compactions always run a real merge (they
+  // never take the trivial-move path), so compacting the table's level reads
+  // every record it contains.
+  DBImpl* dbi = reinterpret_cast<DBImpl*>(db_);  // Fresh handle: Reopen() above replaced the DB.
+  for (int level = 0; level <= config::kMaxMemCompactLevel; level++) {
+    dbi->TEST_CompactRange(level, nullptr, nullptr);
+  }
+  uint64_t table_size = 0;
+  ASSERT_LEVELDB_OK(env_.target()->GetFileSize(table_fname, &table_size))
+      << "source table was deleted by the failed compaction";
+
+  std::string write_key, write_value;
+  Status write_status =
+      db_->Put(WriteOptions(), Key(5, &write_key), Value(5, &write_value));
+  ASSERT_TRUE(!write_status.ok())
+      << "background compaction error was not recorded";
 }
 
 TEST_F(CorruptionTest, UnrelatedKeys) {
