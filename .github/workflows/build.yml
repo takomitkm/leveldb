@@ -255,7 +255,7 @@ jobs:
         fi
 
     # The ReadBlockIssue1349Test suite carries the compression-aware
-    # hardening (3 snappy cases, 6 zstd cases, 3 codec-independent cases).
+    # hardening (3 snappy cases, 8 zstd cases, 3 codec-independent cases).
     # This job is the only place those zstd cases execute at all — the other
     # jobs install only snappy and GTEST_SKIP them — so a skip here would
     # mean the hardening is shipping untested. Same discipline as the step
@@ -269,8 +269,8 @@ jobs:
           exit 1
         fi
         passed=$(grep -oE '\[  PASSED  \] [0-9]+ tests?' build/read_block_hardening.log | grep -oE '[0-9]+' | head -1)
-        if [ "${passed:-0}" -ne 12 ]; then
-          echo "::error::expected 12 passing ReadBlockIssue1349Test cases (3 snappy + 6 zstd + 3 codec-independent), got ${passed:-0}"
+        if [ "${passed:-0}" -ne 14 ]; then
+          echo "::error::expected 14 passing ReadBlockIssue1349Test cases (3 snappy + 8 zstd + 3 codec-independent), got ${passed:-0}"
           exit 1
         fi
 
