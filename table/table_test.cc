@@ -17,6 +17,7 @@
 #include "db/write_batch_internal.h"
 #include "leveldb/db.h"
 #include "leveldb/env.h"
+#include "leveldb/filter_policy.h"
 #include "leveldb/iterator.h"
 #include "leveldb/options.h"
 #include "leveldb/table_builder.h"
@@ -943,6 +944,113 @@ TEST(TableTest, OversizedBlockHandle) {
   iter->SeekToFirst();
   ASSERT_FALSE(iter->Valid());
   ASSERT_FALSE(iter->status().ok());
+}
+
+// A WritableFile whose Append always fails, for exercising error
+// propagation through TableBuilder.
+class FailAppendSink : public WritableFile {
+ public:
+  FailAppendSink() = default;
+  ~FailAppendSink() override = default;
+
+  Status Close() override { return Status::OK(); }
+  Status Flush() override { return Status::OK(); }
+  Status Sync() override { return Status::OK(); }
+  Status Append(const Slice&) override {
+    return Status::IOError("injected Append failure");
+  }
+};
+
+TEST(TableTest, ChangeOptionsFlushesPendingBlockWithOldOptions) {
+  Options options;
+  StringSink sink;
+  TableBuilder builder(options, &sink);
+  builder.Add("a", "value-a");
+
+  Options tighter = options;
+  tighter.block_restart_interval = 1;
+  ASSERT_LEVELDB_OK(builder.ChangeOptions(tighter));
+  builder.Add("b", "value-b");
+  ASSERT_LEVELDB_OK(builder.Finish());
+
+  StringSource source(sink.contents());
+  Options read_options;
+  read_options.comparator = options.comparator;
+  Table* raw_table = nullptr;
+  ASSERT_LEVELDB_OK(
+      Table::Open(read_options, &source, sink.contents().size(), &raw_table));
+  std::unique_ptr<Table> table(raw_table);
+  std::unique_ptr<Iterator> iter(table->NewIterator(ReadOptions()));
+  iter->SeekToFirst();
+  ASSERT_TRUE(iter->Valid());
+  EXPECT_EQ("a", iter->key().ToString());
+  EXPECT_EQ("value-a", iter->value().ToString());
+  iter->Next();
+  ASSERT_TRUE(iter->Valid());
+  EXPECT_EQ("b", iter->key().ToString());
+  EXPECT_EQ("value-b", iter->value().ToString());
+  iter->Next();
+  ASSERT_FALSE(iter->Valid());
+  ASSERT_TRUE(iter->status().ok()) << iter->status().ToString();
+}
+
+TEST(TableTest, ChangeOptionsAfterAbandonIsRejected) {
+  Options options;
+  StringSink sink;
+  TableBuilder builder(options, &sink);
+  builder.Add("a", "value-a");
+  builder.Abandon();
+
+  // Abandon() stopped using the file; ChangeOptions must fail instead of
+  // flushing the pending block through it.
+  Status s = builder.ChangeOptions(options);
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
+}
+
+TEST(TableTest, ChangeOptionsPropagatesFlushFailure) {
+  Options options;
+  FailAppendSink sink;
+  TableBuilder builder(options, &sink);
+  // Buffered only: nothing reaches the file until the flush below.
+  builder.Add("a", "value-a");
+
+  Status s = builder.ChangeOptions(options);
+  // The flush this call initiated failed; the caller has to see it.
+  ASSERT_TRUE(s.IsIOError()) << s.ToString();
+  builder.Abandon();
+}
+
+TEST(TableTest, ChangeOptionsRejectsFilterPolicyChange) {
+  Options options;
+  options.filter_policy = NewBloomFilterPolicy(10);
+  StringSink sink;
+  TableBuilder builder(options, &sink);
+  builder.Add("a", "value-a");
+
+  Options without_filter = options;
+  without_filter.filter_policy = nullptr;
+  Status s = builder.ChangeOptions(without_filter);
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
+
+  // The rejection must leave the builder untouched and usable.
+  builder.Add("b", "value-b");
+  ASSERT_LEVELDB_OK(builder.Finish());
+  delete options.filter_policy;
+}
+
+TEST(TableTest, ChangeOptionsRejectsInvalidRestartInterval) {
+  Options options;
+  StringSink sink;
+  TableBuilder builder(options, &sink);
+  builder.Add("a", "value-a");
+
+  Options bad = options;
+  bad.block_restart_interval = 0;
+  Status s = builder.ChangeOptions(bad);
+  ASSERT_TRUE(s.IsInvalidArgument()) << s.ToString();
+
+  builder.Add("b", "value-b");
+  ASSERT_LEVELDB_OK(builder.Finish());
 }
 
 }  // namespace leveldb

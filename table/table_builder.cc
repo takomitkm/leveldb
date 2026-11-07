@@ -82,11 +82,37 @@ Status TableBuilder::ChangeOptions(const Options& options) {
   if (options.comparator != rep_->options.comparator) {
     return Status::InvalidArgument("changing comparator while building table");
   }
+  if (options.filter_policy != rep_->options.filter_policy) {
+    // The filter block is built with the policy chosen at construction;
+    // swapping policies mid-build (including removing one) would write a
+    // filter under one policy while advertising another - or dereference a
+    // policy that is no longer there.
+    return Status::InvalidArgument(
+        "changing filter policy while building table");
+  }
+  if (options.block_restart_interval < 1) {
+    return Status::InvalidArgument(
+        "invalid block_restart_interval while building table");
+  }
+  if (rep_->closed) {
+    // Finish()/Abandon() stopped using the file; do not touch it again.
+    return Status::InvalidArgument(
+        "ChangeOptions called after Finish() or Abandon()");
+  }
+  if (!ok()) {
+    return status();
+  }
 
   // Note that any live BlockBuilders point to rep_->options and therefore
   // will automatically pick up the updated options.
   if (!rep_->data_block.empty()) {
     Flush();
+  }
+  if (!ok()) {
+    // The flush error must reach the caller, and the options must stay
+    // unchanged: the pending block was written with the old settings, so
+    // switching now would leave the file inconsistent with either set.
+    return status();
   }
   rep_->options = options;
   rep_->index_block_options = options;

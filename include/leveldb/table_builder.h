@@ -43,7 +43,10 @@ class LEVELDB_EXPORT TableBuilder {
   // not allowed to change dynamically and its value in the structure
   // passed to the constructor is different from its value in the
   // structure passed to this method, this method will return an error
-  // without changing any fields.
+  // without changing any fields.  Calling this after Finish() or
+  // Abandon() is also an error (the builder stopped using its file),
+  // and an I/O error raised while flushing the pending block is
+  // returned from this call instead of being deferred.
   Status ChangeOptions(const Options& options);
 
   // Add key,value to the table being constructed.
