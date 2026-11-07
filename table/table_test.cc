@@ -5,8 +5,10 @@
 #include "leveldb/table.h"
 
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -944,6 +946,43 @@ TEST(TableTest, OversizedBlockHandle) {
   iter->SeekToFirst();
   ASSERT_FALSE(iter->Valid());
   ASSERT_FALSE(iter->status().ok());
+}
+
+// The restart array must end inside the uint32_t range the format stores it
+// in: a block whose data region ends one byte past 4 GiB used to have its
+// restart offset truncated to 0 and was accepted silently.  The test builds
+// both boundary blocks on one 4 GiB buffer and never iterates them (the body
+// is uninitialized), so it only touches two pages and the iterator status.
+TEST(BlockTest, RestartOffsetMustBeUint32Representable) {
+  const size_t kUint32Max = std::numeric_limits<uint32_t>::max();
+  // One allocation sized for the larger case; the body is never written to.
+  std::unique_ptr<char[]> buffer(new (std::nothrow) char[kUint32Max + 5]);
+  if (buffer == nullptr) {
+    GTEST_SKIP() << "could not commit the 4 GiB buffer this test needs";
+  }
+
+  // size_ = U+5, num_restarts = 0 -> restart offset U+1: beyond uint32_t.
+  // The block must be rejected; before the guard it was accepted with the
+  // offset silently truncated to 0.
+  EncodeFixed32(buffer.get() + kUint32Max + 1, 0);
+  BlockContents oversized;
+  oversized.data = Slice(buffer.get(), kUint32Max + 5);
+  oversized.cachable = false;
+  oversized.heap_allocated = false;
+  Block oversized_block(oversized);
+  std::unique_ptr<Iterator> rejected(oversized_block.NewIterator(BytewiseComparator()));
+  EXPECT_TRUE(rejected->status().IsCorruption()) << rejected->status().ToString();
+
+  // size_ = U+4, num_restarts = 0 -> restart offset exactly U: representable,
+  // and must stay accepted.
+  EncodeFixed32(buffer.get() + kUint32Max, 0);
+  BlockContents boundary;
+  boundary.data = Slice(buffer.get(), kUint32Max + 4);
+  boundary.cachable = false;
+  boundary.heap_allocated = false;
+  Block boundary_block(boundary);
+  std::unique_ptr<Iterator> accepted(boundary_block.NewIterator(BytewiseComparator()));
+  EXPECT_TRUE(accepted->status().ok()) << accepted->status().ToString();
 }
 
 // A WritableFile whose Append always fails, for exercising error
