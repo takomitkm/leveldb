@@ -9,6 +9,8 @@
 #endif  // ifndef NOMINMAX
 #include <windows.h>
 
+#include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -376,6 +378,61 @@ TEST_F(EnvWindowsTest, LoggerAppendsAcrossOpens) {
   EXPECT_NE(std::string::npos, contents.find("first open"));
   EXPECT_NE(std::string::npos, contents.find("second open"));
   ASSERT_LEVELDB_OK(env_->RemoveFile(log_file));
+}
+
+// A read request of 4 GiB or more cannot be served by one ReadFile call:
+// the length parameter is a DWORD, and 2^32 truncates to zero, reporting an
+// empty read for data that is actually there.  The non-mmap reader must
+// serve such requests in chunks and return the bytes available as a short
+// read.  The test only needs a small file: a chunked implementation stops
+// at its short read and never touches the buffer beyond the file size.
+TEST_F(EnvWindowsTest, HugeReadRequestServedInChunks) {
+  std::string test_dir;
+  ASSERT_LEVELDB_OK(env_->GetTestDirectory(&test_dir));
+  std::string test_file = test_dir + "/huge_read_request.txt";
+
+  const char kFileData[] = "abcdefghijklmnopqrstuvwxyz";
+  {
+    WritableFile* f = nullptr;
+    ASSERT_LEVELDB_OK(env_->NewWritableFile(test_file, &f));
+    ASSERT_LEVELDB_OK(f->Append(kFileData));
+    ASSERT_LEVELDB_OK(f->Close());
+    delete f;
+  }
+
+  // Open one more handle than the mmap limit so the handle used below is
+  // backed by WindowsRandomAccessFile (plain ReadFile), not an mmap view.
+  const int kNumFiles = kMMapLimit + 1;
+  leveldb::RandomAccessFile* files[kNumFiles] = {0};
+  for (int i = 0; i < kNumFiles; i++) {
+    ASSERT_LEVELDB_OK(env_->NewRandomAccessFile(test_file, &files[i]));
+  }
+
+  const size_t kHugeRequest = size_t(1) << 32;  // DWORD cast turns this into 0.
+  // The RandomAccessFile contract requires the scratch buffer to cover the
+  // whole request; the read below stops at the file's end, so only the first
+  // 26 bytes are ever written to.
+  std::unique_ptr<char[]> scratch(new (std::nothrow) char[kHugeRequest]);
+  if (scratch == nullptr) {
+    GTEST_SKIP() << "could not commit the 4 GiB scratch buffer this test needs";
+  }
+  Slice read_result;
+  ASSERT_LEVELDB_OK(
+      files[kNumFiles - 1]->Read(0, kHugeRequest, &read_result, scratch.get()));
+  ASSERT_EQ(sizeof(kFileData) - 1, read_result.size());
+  ASSERT_EQ(0, std::memcmp(kFileData, read_result.data(), read_result.size()));
+
+  // A request straddling EOF behaves the same from a non-zero offset.
+  ASSERT_LEVELDB_OK(
+      files[kNumFiles - 1]->Read(3, kHugeRequest, &read_result, scratch.get()));
+  ASSERT_EQ(sizeof(kFileData) - 1 - 3, read_result.size());
+  ASSERT_EQ(0, std::memcmp(kFileData + 3, read_result.data(),
+                           sizeof(kFileData) - 1 - 3));
+
+  for (int i = 0; i < kNumFiles; i++) {
+    delete files[i];
+  }
+  ASSERT_LEVELDB_OK(env_->RemoveFile(test_file));
 }
 
 }  // namespace leveldb

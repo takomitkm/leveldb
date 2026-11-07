@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -299,21 +300,42 @@ class WindowsRandomAccessFile : public RandomAccessFile {
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {
-    DWORD bytes_read = 0;
-    OVERLAPPED overlapped = {0};
-
-    overlapped.OffsetHigh = static_cast<DWORD>(offset >> 32);
-    overlapped.Offset = static_cast<DWORD>(offset);
-    if (!::ReadFile(handle_.get(), scratch, static_cast<DWORD>(n), &bytes_read,
-                    &overlapped)) {
-      DWORD error_code = ::GetLastError();
-      if (error_code != ERROR_HANDLE_EOF) {
-        *result = Slice(scratch, 0);
-        return Status::IOError(filename_, GetWindowsErrorMessage(error_code));
+    // ReadFile takes a DWORD length, so a single call cannot ask for 4 GiB
+    // or more: the request would truncate (2^32 becomes zero) and report an
+    // empty read for data that is actually there.  Serve large requests in
+    // chunks, accumulating a short read when the file ends early - exactly
+    // the short-read semantics the single-call version had.
+    static const DWORD kMaxChunkSize = std::numeric_limits<DWORD>::max();
+    size_t total_read = 0;
+    while (total_read < n) {
+      const uint64_t chunk_offset = offset + total_read;
+      const size_t remaining = n - total_read;
+      const DWORD chunk_size = static_cast<DWORD>(
+          remaining < kMaxChunkSize ? remaining : kMaxChunkSize);
+      DWORD bytes_read = 0;
+      OVERLAPPED overlapped = {0};
+      overlapped.OffsetHigh = static_cast<DWORD>(chunk_offset >> 32);
+      overlapped.Offset = static_cast<DWORD>(chunk_offset);
+      if (!::ReadFile(handle_.get(), scratch + total_read, chunk_size,
+                      &bytes_read, &overlapped)) {
+        const DWORD error_code = ::GetLastError();
+        if (error_code != ERROR_HANDLE_EOF) {
+          *result = Slice(scratch, 0);
+          return Status::IOError(filename_,
+                                 GetWindowsErrorMessage(error_code));
+        }
+        break;  // EOF: report the bytes accumulated so far.
+      }
+      if (bytes_read == 0) {
+        break;  // Nothing more to give.
+      }
+      total_read += bytes_read;
+      if (bytes_read < chunk_size) {
+        break;  // Short read: report it, as the single-call version did.
       }
     }
 
-    *result = Slice(scratch, bytes_read);
+    *result = Slice(scratch, total_read);
     return Status::OK();
   }
 
