@@ -285,10 +285,3 @@
 >
 > Use at your own risk; patches are offered as-is, in the hope they are useful
 > upstream.
-
----
-
-The original upstream README — features, API documentation, limitations,
-build instructions, and benchmark methodology — is unchanged there and is
-deliberately not duplicated in this fork:
-<https://github.com/google/leveldb#readme>
