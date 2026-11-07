@@ -287,7 +287,11 @@ class Repairer {
     if (status.ok()&& !empty) {
       tables_.push_back(t);
     } else if (status.ok() && empty) {
-      ArchiveFile(TableFileName(dbname_, number));
+      // Archive the file that is actually there: for old tables that is the
+      // ".sst" name, and archiving the (non-existent) ".ldb" name instead
+      // would leave the original in place - excluded from the new MANIFEST,
+      // so the next Open() deletes it and the evidence is lost.
+      ArchiveFile(fname);
       Log(options_.info_log, "Table #%llu: dropped (no valid keys)",(unsigned long long)t.meta.number);
     } else {
       RepairTable(fname, t);  // RepairTable archives input file.

@@ -12,6 +12,7 @@
 #include "leveldb/cache.h"
 #include "leveldb/db.h"
 #include "leveldb/table.h"
+#include "leveldb/table_builder.h"
 #include "leveldb/write_batch.h"
 #include "util/logging.h"
 #include "util/testutil.h"
@@ -417,6 +418,72 @@ TEST_F(CorruptionTest, CompactionFailsOnInvalidInternalKey) {
       db_->Put(WriteOptions(), Key(5, &write_key), Value(5, &write_value));
   ASSERT_TRUE(!write_status.ok())
       << "background compaction error was not recorded";
+}
+
+namespace {
+// A WritableFile that collects into a string, for building tables in tests.
+class MemorySink : public WritableFile {
+ public:
+  Status Close() override { return Status::OK(); }
+  Status Flush() override { return Status::OK(); }
+  Status Sync() override { return Status::OK(); }
+  Status Append(const Slice& data) override {
+    contents_.append(data.data(), data.size());
+    return Status::OK();
+  }
+
+  std::string contents_;
+};
+}  // namespace
+
+TEST_F(CorruptionTest, RepairArchivesEmptyTableUnderActualName) {
+  // Drop a physically valid table with zero parseable records into the DB
+  // directory under the OLD ".sst" name.  ScanTable() only finds it through
+  // its ".ldb"-first fallback, so archiving must use the name that is
+  // actually there - otherwise the original stays behind, is excluded from
+  // the rebuilt MANIFEST, and the next Open() deletes it as garbage.
+  delete db_;
+  db_ = nullptr;
+
+  const std::string sst_name = SSTTableFileName(dbname(), 7);
+  std::string table_bytes;
+  {
+    Options builder_options;
+    builder_options.compression = kNoCompression;
+    MemorySink sink;
+    TableBuilder builder(builder_options, &sink);
+    std::string bad_key("k");
+    uint64_t tag = 2;  // sequence 0, value type 2 (out of range)
+    bad_key.append(reinterpret_cast<const char*>(&tag), sizeof(tag));
+    builder.Add(bad_key, "evidence");
+    ASSERT_LEVELDB_OK(builder.Finish());
+    table_bytes = sink.contents_;
+  }
+  {
+    WritableFile* file = nullptr;
+    ASSERT_LEVELDB_OK(env_.target()->NewWritableFile(sst_name, &file));
+    ASSERT_LEVELDB_OK(file->Append(table_bytes));
+    ASSERT_LEVELDB_OK(file->Close());
+    delete file;
+  }
+
+  ASSERT_LEVELDB_OK(::leveldb::RepairDB(dbname(), options_));
+
+  uint64_t size = 0;
+  // The original table was moved away, and its copy lives in lost/ under
+  // the same name it had outside.
+  ASSERT_FALSE(env_.target()->GetFileSize(sst_name, &size).ok())
+      << "empty table was not moved out of the DB directory";
+  ASSERT_LEVELDB_OK(
+      env_.target()->GetFileSize(dbname() + "/lost/000007.sst", &size))
+      << "empty table was not archived under its actual name";
+  ASSERT_EQ(table_bytes.size(), size);
+
+  // Reopening the repaired DB must not destroy the archived evidence.
+  Reopen();
+  ASSERT_LEVELDB_OK(
+      env_.target()->GetFileSize(dbname() + "/lost/000007.sst", &size));
+  ASSERT_EQ(table_bytes.size(), size);
 }
 
 TEST_F(CorruptionTest, UnrelatedKeys) {
