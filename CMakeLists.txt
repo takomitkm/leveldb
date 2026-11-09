@@ -30,6 +30,19 @@ else (WIN32)
   set(LEVELDB_PLATFORM_NAME LEVELDB_PLATFORM_POSIX)
 endif (WIN32)
 
+
+# A failed check_* writes an EMPTY cache entry, and CMake treats "entry
+# present" as "already answered" -- the probe then never re-runs, so a stale
+# empty result silently sticks forever (e.g. db_bench_tree_db stayed skipped
+# after the kyotocabinet probe was fixed). Drop empty cache entries right
+# before probing: every configure then re-detects, while non-empty values (a
+# successful run, or an explicit -DHAVE_*=... pin from the command line) are
+# kept.
+function(leveldb_drop_stale_probe_cache var)
+  if(DEFINED CACHE{${var}} AND "${${var}}" STREQUAL "")
+    unset(${var} CACHE)
+  endif()
+endfunction()
 option(LEVELDB_BUILD_TESTS "Build LevelDB's unit tests" ON)
 option(LEVELDB_BUILD_BENCHMARKS "Build LevelDB's benchmarks" ON)
 option(LEVELDB_INSTALL "Install LevelDB's header and library" ON)
@@ -38,6 +51,7 @@ option(LEVELDB_DISABLE_RTTI "Disable Rtti" OFF)
 option(LEVELDB_WINDOWS_UTF8_PATHS "Interpret Windows paths as UTF-8 instead of the file API code page" ON)
 
 include(CheckIncludeFile)
+leveldb_drop_stale_probe_cache(HAVE_UNISTD_H)
 check_include_file("unistd.h" HAVE_UNISTD_H)
 
 include(CheckLibraryExists)
@@ -47,12 +61,16 @@ include(CheckLibraryExists)
 # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY), after which a missing
 # library can still probe as found — set the HAVE_* variables explicitly
 # in cross builds.
+leveldb_drop_stale_probe_cache(HAVE_CRC32C)
 check_library_exists(crc32c crc32c_value "" HAVE_CRC32C)
+leveldb_drop_stale_probe_cache(HAVE_SNAPPY)
 check_library_exists(snappy snappy_compress "" HAVE_SNAPPY)
 # The exported symbol is ZSTD_compress (capital), not zstd_compress:
 # a lowercase probe never links, so HAVE_ZSTD stayed empty even with
 # libzstd-dev installed and the zstd compression path was never compiled.
+leveldb_drop_stale_probe_cache(HAVE_ZSTD)
 check_library_exists(zstd ZSTD_compress "" HAVE_ZSTD)
+leveldb_drop_stale_probe_cache(HAVE_TCMALLOC)
 check_library_exists(tcmalloc malloc "" HAVE_TCMALLOC)
 
 include(CheckCXXSymbolExists)
@@ -61,8 +79,11 @@ include(CheckCXXSymbolExists)
 # compiler language that the project will use later. Principles aside, some
 # versions of do not expose fdatasync() in <unistd.h> in standard C mode
 # (-std=c11), but do expose the function in standard C++ mode (-std=c++11).
+leveldb_drop_stale_probe_cache(HAVE_FDATASYNC)
 check_cxx_symbol_exists(fdatasync "unistd.h" HAVE_FDATASYNC)
+leveldb_drop_stale_probe_cache(HAVE_FULLFSYNC)
 check_cxx_symbol_exists(F_FULLFSYNC "fcntl.h" HAVE_FULLFSYNC)
+leveldb_drop_stale_probe_cache(HAVE_O_CLOEXEC)
 check_cxx_symbol_exists(O_CLOEXEC "fcntl.h" HAVE_O_CLOEXEC)
 
 # Compiler flags (-fno-exceptions/-fno-rtti//EHs-c-/GR-) are applied to
@@ -112,15 +133,18 @@ endif(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 # Test whether -Wthread-safety is available. See
 # https://clang.llvm.org/docs/ThreadSafetyAnalysis.html
 include(CheckCXXCompilerFlag)
+leveldb_drop_stale_probe_cache(HAVE_CLANG_THREAD_SAFETY)
 check_cxx_compiler_flag(-Wthread-safety HAVE_CLANG_THREAD_SAFETY)
 
 # Used by googletest.
+leveldb_drop_stale_probe_cache(LEVELDB_HAVE_NO_MISSING_FIELD_INITIALIZERS)
 check_cxx_compiler_flag(-Wno-missing-field-initializers
                         LEVELDB_HAVE_NO_MISSING_FIELD_INITIALIZERS)
 
 include(CheckCXXSourceCompiles)
 
 # Test whether C++17 __has_include is available.
+leveldb_drop_stale_probe_cache(HAVE_CXX17_HAS_INCLUDE)
 check_cxx_source_compiles("
 #if defined(__has_include) &&  __has_include(<string>)
 #include <string>
@@ -526,6 +550,7 @@ if(LEVELDB_BUILD_BENCHMARKS)
     leveldb_benchmark("benchmarks/db_bench.cc")
   endif(NOT BUILD_SHARED_LIBS)
 
+  leveldb_drop_stale_probe_cache(HAVE_SQLITE3)
   check_library_exists(sqlite3 sqlite3_open "" HAVE_SQLITE3)
   if(HAVE_SQLITE3)
     leveldb_benchmark("benchmarks/db_bench_sqlite3.cc")
@@ -546,6 +571,7 @@ if(LEVELDB_BUILD_BENCHMARKS)
   else(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fexceptions")
   endif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  leveldb_drop_stale_probe_cache(HAVE_KYOTOCABINET)
   check_cxx_source_compiles("
 #include <kcpolydb.h>
 
