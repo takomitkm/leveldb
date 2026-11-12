@@ -1,4 +1,16 @@
-> **This is a personal fork of [google/leveldb](https://github.com/google/leveldb).**
+> **向后兼容性尚未做好，暂不建议直接使用或替换上游 LevelDB。**
+>
+> **Backward compatibility is incomplete and has not been fully validated.**
+> Do not treat this fork or its binary packages as a ready-to-use replacement
+> for upstream LevelDB, or use them with important databases before validating
+> your application and deployment. Individual fixes and passing tests do not
+> establish complete compatibility.
+>
+> See [section E](#e-backward-compatibility-audit--向后兼容性审查-2026-11-07)
+> and the [step-by-step compatibility checklist (中文)](docs/BACKWARD_COMPATIBILITY_CHECKLIST.zh-CN.md)
+> for confirmed historical defects, current fixes, remaining decisions and
+> checks that still need to be performed.
+
 >
 > **Purpose:** collect and merge the Windows-related pull requests that have been
 > sitting unreviewed upstream for years, plus data-loss fixes that had no
@@ -6,19 +18,20 @@
 > together. **This is not an official leveldb release.** Upstream `master` is
 > untouched; everything here is meant to be offered back upstream.
 >
-> **Windows download choice:** each release provides `-acp` packages for original
-> Win32 narrow-code-page paths and `-utf8` packages for explicitly UTF-8 paths.
-> Both retain the safety fixes. See the [compatibility guide](docs/COMPATIBILITY.md)
-> for the build option, CRT/compiler requirements, codec support and behavioural
-> differences before replacing an existing library.
+> **Windows download choice:** the new release packaging distinguishes `-acp`
+> packages for original Win32 narrow-code-page paths from `-utf8` packages for
+> explicitly UTF-8 paths. Older assets do not all follow this convention.
+> Both path variants retain the safety fixes. See the [compatibility guide](docs/COMPATIBILITY.md)
+> for build options, CRT/compiler requirements, codec support and behavioural
+> differences; selecting a path variant alone does not establish compatibility.
 >
-> **Contents (all sources listed).** Split into four groups: Windows↔POSIX
-> inconsistencies that are fixed here, inconsistencies that are still open
-> upstream, everything else, and the tests/CI this fork added (table D). The
-> second-to-last column of each table records what downstream projects do about
-> the problem **without fixing upstream** — either an application-level "delete
-> the database and rebuild" policy, or a private patch inside their own fork.
-> The last column names the CI job that guards the change.
+> **Contents (all sources listed).** Tables A–C cover Windows↔POSIX fixes,
+> remaining platform inconsistencies, and other fixes. Their last two columns
+> record downstream workarounds and CI guards. Table D lists the tests/CI added
+> by this fork. **Section E (at the end of this file) records the backward
+> compatibility audit** and links the detailed execution checklist; earlier
+> platform-parity conclusions are not a guarantee that downstream applications
+> can directly replace their library.
 >
 > **How to tell what is original here.** When the *Change* title is a link — e.g.
 > [Durable `RenameFile`](https://github.com/takomitkm/leveldb/commit/3951ee8) — the row is this fork's own work and the link points at the
@@ -37,13 +50,7 @@
 > | **Short read handling** in `SequentialFile::Read` | loops until `n` bytes or EOF | a short `ReadFile` was treated as EOF, silently truncating WAL/MANIFEST reads | [PR #1334](https://github.com/google/leveldb/pull/1334) (open since 2026, data loss) | none found | `leveldb_tests` (all `build-and-test` cells) |
 > | **Precise `NowMicros()`** | `clock_gettime` (µs) | coarse system timer | [PR #1366](https://github.com/google/leveldb/pull/1366) (open since 2026) | none found | `leveldb_tests` |
 > | **[Appending `NewLogger`](https://github.com/takomitkm/leveldb/commit/7c242f8)** | `NewLogger()` opens with `O_APPEND \| O_CREAT` — the LOG file grows across opens | `NewLogger()` opened with `fopen(..., "wN")`, truncating the diagnostic LOG at every open and destroying the previous run's diagnostics | **[7c242f8](https://github.com/takomitkm/leveldb/commit/7c242f8)** — written for this fork (one-line `fopen` mode change to `"aN"`, keeping the non-inheritable `"N"` flag) | none needed (cosmetic; upstream still truncates) | `win-quick` (`LoggerAppendsAcrossOpens`) |
-> | **[Parent-directory sync for manifests](https://github.com/takomitkm/leveldb/commit/30b34e0)** | `Sync()` → `SyncDirIfManifest()` opens the parent directory and fsyncs it **before** the manifest data lands | `Sync()` said "On Windows no need to sync parent directory" and only called `FlushFileBuffers` on the file — a power failure could lose a newly created manifest's directory entry even though its data was written, leaving `CURRENT` pointing at a file that no longer exists | **[30b34e0](https://github.com/takomitkm/leveldb/commit/30b34e0)** — written for this fork: `SyncDirIfManifest()` mirrors the POSIX order, opening the parent directory with `CreateFileW(GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS)` and flushing it with `FlushFileBuffers()` (verified empirically on NTFS as a non-admin user on two volumes; the handle needs `GENERIC_WRITE` — a read-only directory handle fails with `ERROR_ACCESS_DENIED` — and no administrator privilege is involved). No prior proposal exists upstream. Microsoft's own documentation neither guarantees nor denies the underlying durability: [MS-FSA §2.1.5.7](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0de7dc40-9627-437e-a4df-c4696cdc3d02) with product note `<80>` (implemented by NTFS only) defines a directory flush that "ensures that the directory structure is persisted to stable storage", and Microsoft staff confirmed this `GENERIC_WRITE` directory-handle flush is empirically reproducible — "consistent with documented NTFS behavior" — while the Win32 access contract stays unpublished ([Q&A 2026-10-20](https://learn.microsoft.com/en-us/answers/questions/6043125/windows-ntfs-supported-user-mode-directory-flush-a); [Q&A 2026-11-02](https://learn.microsoft.com/en-us/answers/questions/6057877/supported-user-mode-ntfs-directory-flush-and-durab): "no documented non-administrative API sequence" guarantees namespace durability). An E13 QEMU power-cut measurement was attempted (2026-11-08–10) but could not
-produce valid data: WinPE lacks a serial driver, so the host cannot detect the
-exact moment the probe creates the trial file, and under TCG the CD ramdisk boot
-takes 20–35 minutes, giving NTFS’s lazy writer ample time to flush everything
-before the simulated power cut. The qualitative basis for this fix is therefore
-documentary (MS-FSA §2.1.5.7 + the two Q&A links above) and ecosystem-wide
-(SQLite, RocksDB and Chromium all skip Windows directory sync), not empirical. | **RocksDB**: `WinDirectory::Fsync` is a no-op. **Chromium**: `SyncParent()` is compiled out on Windows. No downstream project flushes the directory. | `win-quick` (`ManifestSyncFlushesDirectory`) |
+> | **[Parent-directory sync for manifests](https://github.com/takomitkm/leveldb/commit/30b34e0)** | `Sync()` → `SyncDirIfManifest()` opens the parent directory and fsyncs it **before** the manifest data lands | `Sync()` said "On Windows no need to sync parent directory" and only called `FlushFileBuffers` on the file — a power failure could lose a newly created manifest's directory entry even though its data was written, leaving `CURRENT` pointing at a file that no longer exists | **[30b34e0](https://github.com/takomitkm/leveldb/commit/30b34e0)** — written for this fork: `SyncDirIfManifest()` mirrors the POSIX order, opening the parent directory with `CreateFileW(GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS)` and flushing it with `FlushFileBuffers()` (verified empirically on NTFS as a non-admin user on two volumes; the handle needs `GENERIC_WRITE` — a read-only directory handle fails with `ERROR_ACCESS_DENIED` — and no administrator privilege is involved). No prior proposal exists upstream. Microsoft's own documentation neither guarantees nor denies the underlying durability: [MS-FSA §2.1.5.7](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0de7dc40-9627-437e-a4df-c4696cdc3d02) with product note `<80>` (implemented by NTFS only) defines a directory flush that "ensures that the directory structure is persisted to stable storage", and Microsoft staff confirmed this `GENERIC_WRITE` directory-handle flush is empirically reproducible — "consistent with documented NTFS behavior" — while the Win32 access contract stays unpublished ([Q&A 2026-10-20](https://learn.microsoft.com/en-us/answers/questions/6043125/windows-ntfs-supported-user-mode-directory-flush-a); [Q&A 2026-11-02](https://learn.microsoft.com/en-us/answers/questions/6057877/supported-user-mode-ntfs-directory-flush-and-durab): "no documented non-administrative API sequence" guarantees namespace durability). An E13 QEMU power-cut measurement was attempted (2026-11-08–10) but could not produce valid data: WinPE lacks a serial driver, so the host cannot detect the exact moment the probe creates the trial file, and under TCG the CD ramdisk boot takes 20–35 minutes, giving NTFS’s lazy writer ample time to flush everything before the simulated power cut. The qualitative basis for this fix is therefore documentary (MS-FSA §2.1.5.7 + the two Q&A links above) and ecosystem-wide (SQLite, RocksDB and Chromium all skip Windows directory sync), not empirical. | **RocksDB**: `WinDirectory::Fsync` is a no-op. **Chromium**: `SyncParent()` is compiled out on Windows. No downstream project flushes the directory. | `win-quick` (`ManifestSyncFlushesDirectory`) |
 > | [Regression test `TestRenameFileReplacesExisting`](https://github.com/takomitkm/leveldb/commit/3951ee8) | — | covers the `ReplaceFile` / `ERROR_UNABLE_TO_REMOVE_REPLACED` case from [#775](https://github.com/google/leveldb/issues/775) | [3951ee8](https://github.com/takomitkm/leveldb/commit/3951ee8) | n/a | `win-quick` (`TestRenameFileReplacesExisting`) |
 > | **[Chunked non-mmap reads for requests of 4 GiB and more](https://github.com/takomitkm/leveldb/commit/0a472d3)** | `pread()` takes a `size_t` and serves any length | the request length went straight into `ReadFile`'s `DWORD` parameter: a read of exactly 2^32 truncated to **zero** and reported an empty result for data that was actually there — a reachable short-read-after-corruption for legitimate large blocks, since `ReadBlock` sizes its request from the block handle. mmap-backed reads were unaffected | **[0a472d3](https://github.com/takomitkm/leveldb/commit/0a472d3)** — written for this fork after the post-merge review; requests are chunked at the `DWORD` limit with the previous short-read semantics (one `ReadFile` call still for everything below 4 GiB) | none found | `win-quick` (`env_windows_test` `HugeReadRequestServedInChunks`) |
 >
@@ -360,3 +367,49 @@ documentary (MS-FSA §2.1.5.7 + the two Q&A links above) and ecosystem-wide
 >
 > Use at your own risk; patches are offered as-is, in the hope they are useful
 > upstream.
+
+> ### E. Backward compatibility audit / 向后兼容性审查 (2026-11-07)
+>
+> **Status: incomplete; do not assume a drop-in replacement.** The first audit
+> compared fork [bf583d0](https://github.com/takomitkm/leveldb/commit/bf583d0de56029dbecc0e19a50c43db74b6882d0)
+> against upstream [bb74ef7](https://github.com/google/leveldb/commit/bb74ef739973a70ca9f0d90788a1da89b788c0ad).
+> The source baseline for this document's 2026-11-07 review was
+> [f11fe16](https://github.com/takomitkm/leveldb/commit/f11fe16d3bce0182e699978694fff14d8ca3dfad);
+> after the 2026-11-07 hardening wave (29 commits) the fork main is
+> [dc2fe63](https://github.com/takomitkm/leveldb/commit/dc2fe63c21be889948bc79b1397f07d15eb67c7c),
+> whose new compatibility surface is covered by checklist items BC-41–BC-48.
+> Several fixes that were previously on `ci/release-agg4` are now in main.
+> Their presence in source is not a claim that every package or downstream
+> configuration has passed validation. An existing release is not repaired by
+> a later source commit.
+>
+> Source/API compatibility, binary ABI, path semantics, database/codec support,
+> build configuration and delivery packages must be checked separately. The
+> original audit found only commentary changes in the public headers; that
+> observation alone cannot certify any of the other layers.
+>
+> | Item | Established evidence | Current source and remaining work |
+> | --- | --- | --- |
+> | Custom `SequentialFile` buffers | At bf583d0, the same valid WAL was read correctly by upstream but returned no record and **0 corruption callbacks** in the fork when `Read()` returned its own buffer. | [6b5edb6](https://github.com/takomitkm/leveldb/commit/6b5edb6) copies returned data before buffer reuse and is now in main. Recheck the component and full DB recovery; retain the calibrated tests. |
+> | Native-code-page Windows paths | On ACP **936**, the original GBK path opened through the narrow API; interpreting the same bytes as UTF-8 failed with **error 3**. | Main has ACP/UTF-8 variants and `LEVELDB_WINDOWS_UTF8_PATHS`. Source builds still default to UTF-8. A native-code-page default, requiring no old-caller changes, remains a proposed policy to evaluate. |
+> | LOG and temporary paths | In the same non-ASCII directory, UTF-8 `fopen` failed while `_wfopen` succeeded. `SanitizeOptions` can ignore logger failure. | 6b5edb6 unifies these paths through wide APIs. Validate the actual LOG, directory enumeration, environment paths and all shipped variants. |
+> | Old Windows archives | Examined local agg.1/2/3 ZIPs contained one **2535-byte file** named `include/leveldb` instead of the public header directory. The agg.3 MSVC DLL Release archive matched the remote asset digest. | [b57269c](https://github.com/takomitkm/leveldb/commit/b57269c) installs and checks complete packages. Old archives remain historical failures; validate each new extracted asset rather than assuming the new scripts fixed every published file. |
+> | MSVC runtime across DLL boundaries | Passing C++ objects across DLL/client boundaries requires compatible runtime and ABI settings. The older blanket `/MT` guidance is insufficient for DLL consumers. | [f11fe16](https://github.com/takomitkm/leveldb/commit/f11fe16) adjusts shared-runtime handling for DLL consumers. Test actual compiler, runtime, allocation, Debug/Release and loader combinations before claiming binary interchangeability. |
+> | 2026-11-07 hardening wave ([dc2fe63](https://github.com/takomitkm/leveldb/commit/dc2fe63c21be889948bc79b1397f07d15eb67c7c)) | Backported strictness and error paths: bounded decompression pre-validation plus `nothrow` allocations ([PR #1354](https://github.com/google/leveldb/pull/1354)), restart-offset/handle-size/varint rejection ([#1367](https://github.com/google/leveldb/pull/1367), [#1380](https://github.com/google/leveldb/pull/1380)), `UINT64_MAX` `next_file_number` ([#1377](https://github.com/google/leveldb/pull/1377)), `ChangeOptions` invalid-call rejection ([#1340](https://github.com/google/leveldb/pull/1340) + follow-up), compaction/`BuildTable` fail instead of drop, repair metadata recompute and empty-table archiving, Windows ≥4 GiB chunked reads, directory-wide `_HAS_EXCEPTIONS=0` on MSVC. Public headers remain comment-only. | Valid-data invariance, new error visibility and the new test guards are covered by **BC-41–BC-48** in the checklist. The zstd cases of `ReadBlockIssue1349Test` only execute in the `optional-deps` job — verify with a real Snappy/Zstd environment and treat skips as untested. |
+> | Directory sync and rename | A temporary directory allowed child creation/rename but rejected `GENERIC_WRITE` directory open with **error 5**; a normal directory opened and flushed. Rename visibility tests do not simulate power loss. | The permission requirement remains. Decide the supported filesystem/permission scope; do not silently turn a failed durability operation into success. SMB and physical power-loss behaviour remain unverified here. |
+> | Compression capability | Packages without Snappy/Zstd cannot decode existing blocks using those codecs. Fixing the Zstd probe makes explicit Zstd selection effective. | Check upgrade and downgrade with real compressed blocks and verified decoder capabilities. Built-in CRC32C remains available when the external CRC32C library is disabled. |
+> | Other deliberate changes | Corrupt-input checks, incomplete-tail recovery, CRLF/CR acceptance, best-effort repair, direct logger append, clock precision and build flags can change observations. | Test the documented contract. Do not reintroduce out-of-bounds reads, unsafe tail reuse or destructive logger behaviour merely to match historical bugs. No complete ABI or downstream compatibility certification is supplied. |
+>
+> **Library-side path policy under consideration:** default to the original
+> native file-API code page, convert internally to UTF-16 and use wide APIs
+> consistently. Existing native-code-page callers would need no changes. Keep
+> an explicit UTF-8 variant for existing UTF-8 callers. The default mode would
+> retain upstream's code-page limitations; UTF-8 callers would need the matching
+> variant. Do not guess between two valid encodings or switch encodings after
+> not-found errors. No path-policy code change is made by this documentation.
+>
+> **Execution plan:** [超详细向后兼容性测试与修复清单](docs/BACKWARD_COMPATIBILITY_CHECKLIST.zh-CN.md)
+> records version baselines, dependencies, fixtures, per-item reproduction steps,
+> expected results, causes, repair options, necessity decisions and release gates.
+> All future execution boxes start unchecked. Earlier component/WinAPI evidence
+> is identified separately from work not yet performed.
