@@ -389,7 +389,7 @@ if(LEVELDB_BUILD_TESTS)
   add_executable(leveldb_tests "")
   target_sources(leveldb_tests
     PRIVATE
-      # "db/fault_injection_test.cc"
+      "db/fault_injection_test.cc"
       # "issues/issue178_test.cc"
       # "issues/issue200_test.cc"
       # "issues/issue320_test.cc"
