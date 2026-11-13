@@ -57,7 +57,7 @@
 > | **Short read handling** in `SequentialFile::Read` | loops until `n` bytes or EOF | a short `ReadFile` was treated as EOF, silently truncating WAL/MANIFEST reads | [PR #1334](https://github.com/google/leveldb/pull/1334) (open since 2026, data loss) | none found | `leveldb_tests` (all `build-and-test` cells) | comment on [#1334](https://github.com/google/leveldb/pull/1334) |
 > | **Precise `NowMicros()`** | `clock_gettime` (µs) | coarse system timer | [PR #1366](https://github.com/google/leveldb/pull/1366) (open since 2026) | none found | `leveldb_tests` |  |
 > | **[Appending `NewLogger`](https://github.com/takomitkm/leveldb/commit/7c242f8)** | `NewLogger()` opens with `O_APPEND \| O_CREAT` — the LOG file grows across opens | `NewLogger()` opened with `fopen(..., "wN")`, truncating the diagnostic LOG at every open and destroying the previous run's diagnostics | **[7c242f8](https://github.com/takomitkm/leveldb/commit/7c242f8)** — written for this fork (one-line `fopen` mode change to `"aN"`, keeping the non-inheritable `"N"` flag) | none needed (cosmetic; upstream still truncates) | `win-quick` (`LoggerAppendsAcrossOpens`) | comment on [#850](https://github.com/google/leveldb/pull/850) — the `wN` truncation; fix is `aN` |
-> | **[Parent-directory sync for manifests](https://github.com/takomitkm/leveldb/commit/30b34e0)** | `Sync()` → `SyncDirIfManifest()` opens the parent directory and fsyncs it **before** the manifest data lands | `Sync()` said "On Windows no need to sync parent directory" and only called `FlushFileBuffers` on the file — a power failure could lose a newly created manifest's directory entry even though its data was written, leaving `CURRENT` pointing at a file that no longer exists | **[30b34e0](https://github.com/takomitkm/leveldb/commit/30b34e0)** — written for this fork: `SyncDirIfManifest()` mirrors the POSIX order, opening the parent directory with `CreateFileW(GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS)` and flushing it with `FlushFileBuffers()` (verified empirically on NTFS as a non-admin user on two volumes; the handle needs `GENERIC_WRITE` — a read-only directory handle fails with `ERROR_ACCESS_DENIED` — and no administrator privilege is involved). No prior proposal exists upstream. Microsoft's own documentation neither guarantees nor denies the underlying durability: [MS-FSA §2.1.5.7](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0de7dc40-9627-437e-a4df-c4696cdc3d02) with product note `<80>` (implemented by NTFS only) defines a directory flush that "ensures that the directory structure is persisted to stable storage", and Microsoft staff confirmed this `GENERIC_WRITE` directory-handle flush is empirically reproducible — "consistent with documented NTFS behavior" — while the Win32 access contract stays unpublished ([Q&A 2026-10-20](https://learn.microsoft.com/en-us/answers/questions/6043125/windows-ntfs-supported-user-mode-directory-flush-a); [Q&A 2026-11-02](https://learn.microsoft.com/en-us/answers/questions/6057877/supported-user-mode-ntfs-directory-flush-and-durab): "no documented non-administrative API sequence" guarantees namespace durability). An E13 QEMU power-cut measurement was attempted (2026-11-08–10) but could not produce valid data: WinPE lacks a serial driver, so the host cannot detect the exact moment the probe creates the trial file, and under TCG the CD ramdisk boot takes 20–35 minutes, giving NTFS’s lazy writer ample time to flush everything before the simulated power cut. The qualitative basis for this fix is therefore documentary (MS-FSA §2.1.5.7 + the two Q&A links above) and ecosystem-wide (SQLite, RocksDB and Chromium all skip Windows directory sync), not empirical. | **RocksDB**: `WinDirectory::Fsync` is a no-op. **Chromium**: `SyncParent()` is compiled out on Windows. No downstream project flushes the directory. | `win-quick` (`ManifestSyncFlushesDirectory`) | deliberate: not offered (E13 measurement inconclusive — see the paragraph above this table) |
+> | **[Parent-directory sync for manifests](https://github.com/takomitkm/leveldb/commit/30b34e0)** | `Sync()` → `SyncDirIfManifest()` opens the parent directory and fsyncs it **before** the manifest data lands | `Sync()` said "On Windows no need to sync parent directory" and only called `FlushFileBuffers` on the file — a power failure could lose a newly created manifest's directory entry even though its data was written, leaving `CURRENT` pointing at a file that no longer exists | **[30b34e0](https://github.com/takomitkm/leveldb/commit/30b34e0)** — written for this fork: `SyncDirIfManifest()` mirrors the POSIX order, opening the parent directory with `CreateFileW(GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS)` and flushing it with `FlushFileBuffers()` (verified empirically on NTFS as a non-admin user on two volumes; the handle needs `GENERIC_WRITE` — a read-only directory handle fails with `ERROR_ACCESS_DENIED` — and no administrator privilege is involved). No prior proposal exists upstream. The documentary basis (MS-FSA §2.1.5.7 product note `<80>` plus two Microsoft Q&A threads), the E13 measurement that could not produce valid data, the measured cost of the extra flush, and a survey of who else flushes a directory on Windows are recorded in [section F](#f-windows-directory-flush-who-does-it-who-skips-and-what-it-costs-2026-11-14). | **RocksDB** (`WinDirectory::Fsync` is a no-op) and **Chromium** skip it as well; the full survey, including non-DB projects that do flush, is in [section F](#f-windows-directory-flush-who-does-it-who-skips-and-what-it-costs-2026-11-14). | `win-quick` (`ManifestSyncFlushesDirectory`) | deliberate: not offered (E13 measurement inconclusive; basis, cost and survey in [section F](#f-windows-directory-flush-who-does-it-who-skips-and-what-it-costs-2026-11-14)) |
 > | [Regression test `TestRenameFileReplacesExisting`](https://github.com/takomitkm/leveldb/commit/3951ee8) | — | covers the `ReplaceFile` / `ERROR_UNABLE_TO_REMOVE_REPLACED` case from [#775](https://github.com/google/leveldb/issues/775) | [3951ee8](https://github.com/takomitkm/leveldb/commit/3951ee8) | n/a | `win-quick` (`TestRenameFileReplacesExisting`) | part of PR [#1383](https://github.com/google/leveldb/pull/1383) |
 > | **[Chunked non-mmap reads for requests of 4 GiB and more](https://github.com/takomitkm/leveldb/commit/0a472d3)** | `pread()` takes a `size_t` and serves any length | the request length went straight into `ReadFile`'s `DWORD` parameter: a read of exactly 2^32 truncated to **zero** and reported an empty result for data that was actually there — a reachable short-read-after-corruption for legitimate large blocks, since `ReadBlock` sizes its request from the block handle. mmap-backed reads were unaffected | **[0a472d3](https://github.com/takomitkm/leveldb/commit/0a472d3)** — written for this fork after the post-merge review; requests are chunked at the `DWORD` limit with the previous short-read semantics (one `ReadFile` call still for everything below 4 GiB) | none found | `win-quick` (`env_windows_test` `HugeReadRequestServedInChunks`) |  |
 >
@@ -422,3 +422,98 @@
 > expected results, causes, repair options, necessity decisions and release gates.
 > All future execution boxes start unchecked. Earlier component/WinAPI evidence
 > is identified separately from work not yet performed.
+
+>
+> ### F. Windows directory flush: who does it, who skips, and what it costs (2026-11-14)
+>
+> The `30b34e0` row in table A is the one change here whose core claim is durability rather
+> than bytes: Windows `Sync()` only flushed the manifest file, so a newly created manifest's
+> directory entry could be lost. This section carries the two things that row needs but should
+> not hold inline: what the extra flush costs, and whether anything outside the LSM/DB lineage
+> does it.
+>
+> **Cost (measured on Windows, 2026-11-14).** Two cross-built `db_bench.exe` arms from this
+> fork (MinGW 13 in WSL): arm A as shipped, arm B with `SyncDirIfManifest()` returning OK,
+> identical trees otherwise. Both arms instrument `VersionSet::LogAndApply` (MANIFEST sync
+> count) and `SyncDirIfManifest()` (per-call `steady_clock`), so the added cost is measured
+> directly instead of inferred from noisy end-to-end throughput.
+>
+> | fillrandom, 16 B keys / 100 B values | MANIFEST syncs | directory flush total | share of wall time |
+> |---|---|---|---|
+> | 2 M ops, `write_buffer_size=4 MB` | 155 | 551 ms / 16.7 s | 3.3 % |
+> | 2 M ops, `write_buffer_size=1 MB` | 413 | 275 ms / 19.8 s | 1.4 % (idle box); 1.33 s / 4.6 % on a loaded one |
+> | 1 M ops, `write_buffer_size=256 KB` | 704 | 2.4–2.8 s / 28 s | 8.5–8.8 % (A/B throughput 10.7 % slower: signal above noise) |
+>
+> The cost is the MANIFEST `Sync()` count times one directory flush. That count is one per
+> `LogAndApply` — every flush and compaction — and one flush measured 0.66–3.5 ms depending on
+> writeback pressure (ctypes on the same sequence: 266 µs p50 on a clean directory, 765 µs p50
+> right after a create; a 5 MB file flush is 951 µs for scale). With the default 1–4 MB write
+> buffer the overhead is 1–3 %; only a 256 KB buffer approaches 9 %. End-to-end A/B throughput
+> at the 1 % level is not resolvable on this machine (runs produced both signs), which is why
+> the table reports the instrumented timer.
+>
+> **Survey: who flushes a directory on Windows.** Method: source reading plus two local probes —
+> `CreateFileW` + `FlushFileBuffers` via ctypes, and `fs.openSync(dir, 'r+')` + `fsyncSync` in
+> Node 22.22.2. The decisive detail is handle access: a directory opens with `GENERIC_READ`, but
+> `FlushFileBuffers` on that handle fails with `ERROR_ACCESS_DENIED`; it succeeds with
+> `GENERIC_WRITE`, no administrator rights. Most runtimes and `open(2)`-shaped APIs open
+> directories read-only, which is why the call "does not work" for them.
+>
+> *DB lineage — all skip.* SQLite
+> ([`os_win.c`](https://github.com/sqlite/sqlite/blob/master/src/os_win.c#L4555): the `syncDir`
+> parameter is "Not used on win32"); LMDB (write-through flags, no directory sync); RocksDB
+> ([`io_win.cc`](https://github.com/facebook/rocksdb/blob/main/port/win/io_win.cc#L1085):
+> `WinDirectory::Fsync()` returns OK); Pebble
+> ([`default_windows.go`](https://github.com/cockroachdb/pebble/blob/master/vfs/default_windows.go#L43):
+> `windowsDir.Sync()` returns nil, "same behavior as RocksDB"); Chromium's filesystem service
+> ([`directory_impl.cc`](https://github.com/chromium/chromium/blob/main/components/services/filesystem/directory_impl.cc#L253):
+> `DirectoryImpl::Flush()` is `#if !BUILDFLAG(IS_WIN)`, "On Windows no need to sync
+> directories"); PostgreSQL
+> ([`fd.c`](https://github.com/postgres/postgres/blob/master/src/backend/storage/file/fd.c#L3848):
+> opens directories `O_RDONLY` with CRT `open()`, which fails on Windows with EACCES, so the
+> error is ignored).
+>
+> *Outside the DB lineage — four independent implementations do it.*
+> [deltabox-lite](https://github.com/delta-box/deltabox-lite/blob/main/crates/deltabox-core/src/windows/durability.rs)
+> (agent sandbox with commit semantics) opens the directory with
+> `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH` and
+> flushes every parent up to the root;
+> [ejm-rightkit-fs](https://github.com/ejmlabs/ejm-rightkit-fs/blob/main/src/atomic.rs#L1439)
+> (atomic-replace library) documents exactly the access rule measured above — "a handle opened
+> for listing cannot be flushed (`ERROR_ACCESS_DENIED`), so this opens `GENERIC_WRITE` with
+> `FILE_FLAG_BACKUP_SEMANTICS`";
+> [whim](https://github.com/carthage-software/whim/blob/main/src/filesystem.rs#L211) (a
+> programming language) uses `.write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS)` +
+> `sync_all()`;
+> [D2rHub](https://github.com/gjy991229/D2rHub/blob/main/src-tauri/src/infrastructure/durable_fs.rs)
+> (a Tauri application) uses the same sequence. The primitive is also reachable from Node:
+> libuv adds `FILE_FLAG_BACKUP_SEMANTICS` to every open
+> ([`fs.c`](https://github.com/libuv/libuv/blob/v1.x/src/win/fs.c#L607)), so
+> `fs.openSync(dir, 'r+')` + `fs.fsyncSync` succeeds (2.73 ms measured) while `'r'` returns
+> EPERM.
+>
+> *Outside the DB lineage — the skippers, and four contradictory reasons.* restic
+> ([`local_windows.go`](https://github.com/restic/restic/blob/master/internal/backend/local/local_windows.go):
+> `fsyncDir` is a no-op, "Can't explicitly flush directory changes on Windows"); libgit2
+> ([`futils.c`](https://github.com/libgit2/libgit2/blob/main/src/util/futils.c#L1205):
+> `git_futils_fsync_dir` is `return 0` under `GIT_WIN32`);
+> [youta](https://github.com/vitaly-zdanevich/youta/blob/main/src/durability.rs) believes
+> metadata flushing needs a volume handle and administrator rights;
+> [libfreemkv](https://github.com/freemkv/libfreemkv/blob/main/src/io/fsync/windows.rs)
+> believes Rust's `std` cannot open a directory;
+> [unmv](https://github.com/mevanlc/unmv/blob/main/src/platform/windows.rs#L984) says there is
+> "no generally supported directory fsync equivalent";
+> [kit](https://github.com/speakeasy-api/kit/blob/main/src/resilient_fs/backend.rs#L671) says
+> "Windows does not support FlushFileBuffers on directory handles". None of these matches the
+> two probes: the call works, non-admin, with `GENERIC_WRITE`.
+>
+> **What this means for `30b34e0`.** The same
+> `GENERIC_WRITE + FILE_FLAG_BACKUP_SEMANTICS + FlushFileBuffers` sequence has been
+> independently reinvented by four non-DB projects, one of which recorded the same
+> `ERROR_ACCESS_DENIED` pitfall; "Windows cannot sync a directory" is inherited folklore, not a
+> platform limit. Renames do have an official write-through flag
+> (`MoveFileExW(MOVEFILE_WRITE_THROUGH)`, which this fork uses in `RenameFile`); a *newly
+> created* file's directory entry has no equivalent per-file flag, which is the gap leveldb's
+> manifest creation falls into — and why projects that rely on rename flags never needed the
+> directory flush.
+
