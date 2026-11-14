@@ -555,3 +555,36 @@
 > only observed operation that puts the namespace change on the device (the
 > `go.txt`/source-file entries appear on the platter only in the arms that call it).
 > Real-hardware power loss and `ntfs.sys` replay behavior remain untested.
+
+>
+> ### G. Why nobody did it: the stated reasons, verbatim (2026-11-15)
+>
+> Eight projects skip the parent-directory flush on Windows. Quoted exactly, at the commit each quote was read at, the justifications fall into four groups — and two of those groups cannot both be true.
+>
+> | Project | What the code says | Where |
+> |---|---|---|
+> | **SQLite** | `int syncDir /* Not used on win32 */`, then `UNUSED_PARAMETER(syncDir);` — no reason given | [os_win.c L4552–4563](https://github.com/sqlite/sqlite/blob/c5f86d0198519e70265ceaa3dbbfd14b283f3479/src/os_win.c#L4552-L4563) |
+> | **RocksDB** | `IOStatus WinDirectory::Fsync(...) { return IOStatus::OK(); }` — no stated reason | [io_win.cc L1085–1088](https://github.com/meta/rocksdb/blob/6eeb6d11f96f878a3def51c8945b5fe8a3b483ca/port/win/io_win.cc#L1085-L1088) |
+> | **libgit2** | `#ifdef GIT_WIN32` → `GIT_UNUSED(path); return 0;` — no stated reason | [futils.c L1205–1211](https://github.com/libgit2/libgit2/blob/42a89d7cc9374a19e72fa57011e5fe3a99c7b3bf/src/util/futils.c#L1205-L1211) |
+> | **Pebble** | "Silently ignore Sync() on Windows. This is the same behavior as RocksDB." | [default_windows.go L43–47](https://github.com/cockroachdb/pebble/blob/a995e890c06ef86c583927906e16e7f313083a3f/vfs/default_windows.go#L43-L47) |
+> | **Chromium** | "On Windows no need to sync directories. Their metadata will be updated when files are created, without an explicit sync." | [directory_impl.cc L253–256](https://github.com/chromium/chromium/blob/bc619944d74c8acd9683523c6b4b48fd34591b04/components/services/filesystem/directory_impl.cc#L253-L256) |
+> | **PostgreSQL** | "Some OSs don't allow us to open directories at all (Windows returns EACCES), just ignore the error in that case." | [fd.c L3868–3875](https://github.com/postgres/postgres/blob/81b2179b492e3af891544813b7e22a42386b34d0/src/backend/storage/file/fd.c#L3868-L3875) |
+> | **restic** | "Can't explicitly flush directory changes on Windows." | [local_windows.go L9–10](https://github.com/restic/restic/blob/c734245fd3ae9bcac8ab3aaafb4482d4b5d0ae92/internal/backend/local/local_windows.go#L9-L10) |
+> | **kit** | "Windows does not support FlushFileBuffers on directory handles." | [backend.rs L671–675](https://github.com/speakeasy-api/kit/blob/657eb218cb0769966710d8e76038ced934868a96/src/resilient_fs/backend.rs#L671-L675) |
+>
+> Sorted by what the reason actually claims:
+>
+> 1. **No reason** — SQLite, RocksDB, libgit2. The parameter or call is simply dropped.
+> 2. **Deference** — Pebble points at RocksDB; the chain ends in group 1.
+> 3. **"Not needed"** — Chromium says the OS persists directory metadata for you.
+> 4. **"Impossible"** — PostgreSQL, restic and kit say the platform cannot do it.
+>
+> Groups 3 and 4 are mutually exclusive, and group 4 is false as stated: a directory handle opened with `GENERIC_WRITE` + `FILE_FLAG_BACKUP_SEMANTICS` accepts `FlushFileBuffers` without administrator rights on NTFS, and the block-level tracing in section F shows the namespace entry reaching the device only in that arm. PostgreSQL's version is the narrowest and partly true — its own `open()`-based path does fail with EACCES on Windows — but the step from "our open fails" to "directories cannot be synced" is the same leap the other two make.
+>
+> The likeliest explanation for the spread is not eight independent engineering judgments but one documentation gap. MS-FSA §2.1.5.7 documents the behavior at the filesystem-implementer level (NTFS only, product note `<80>`, first draft 2009), and no Win32 reference page mentions directories at all: `FlushFileBuffers` describes files, and `CreateFile` documents `FILE_FLAG_BACKUP_SEMANTICS` for opening a directory but says nothing about flushing one. So the POSIX-shaped attempt — `open(dir, O_RDONLY)` then `fsync` — fails with `ERROR_ACCESS_DENIED`, which reads as "the platform does not support this", and the no-op gets written down with whatever rationale is nearest to hand.
+>
+> Counted as a set: 8 projects, 3 silences, 1 deference, 1 "the OS already does it", 3 "the OS cannot". No group survived contact with the measurements.
+>
+> Rows record the state before the 2026-11 pull requests. restic ([#22177](https://github.com/restic/restic/pull/22177)) and kit ([#345](https://github.com/speakeasy-api/kit/pull/345)) are being changed by them; the same is proposed for [leveldb #1388](https://github.com/google/leveldb/pull/1388), [Pebble #6258](https://github.com/cockroachdb/pebble/pull/6258), [RocksDB #15682](https://github.com/meta/rocksdb/pull/15682), and SQLite ([bug-forum post](https://sqlite.org/bugs/forumpost/d8ebf597e52841a7e5f5c109bac75ee618680a95c0ecb83c4df6fe422c155bc9)).
+>
+> Three further projects have no directory flush at all and no comment either: LMDB (file-level `MDB_FDATASYNC` maps to `FlushFileBuffers` + `FILE_FLAG_WRITE_THROUGH`), MySQL/InnoDB (`os_parent_dir_fsync_posix` exists but only under `#ifndef _WIN32`), and CouchDB (Erlang exposes no primitive for it, on any platform).
