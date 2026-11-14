@@ -608,12 +608,15 @@ A code search for the sentences themselves ("flush a directory on Windows", "doe
 | **tinystack** (1★) | "Windows does not support FlushFileBuffers on directory handles (which requires GENERIC_WRITE and returns ERROR_ACCESS_DENIED or ERROR_INVALID_FUNCTION)." It names the requirement that makes the call succeed. | [source](https://github.com/amjadjibon/tinystack/blob/28319c7eac9d9597a9b446f36b6ead2cf697f128/internal/storage/archive/sync_windows.go#L10-L12) |
 
 Five more repeat the sentence without adding a reason of their own:
-**Boxset** — "syncDir cannot flush a directory on Windows and never reports that it did." ([source](https://github.com/ViktorsBaikers/Boxset/blob/606296805c76ff0bba47618a4e5e4657544e07af/internal/install/syncdir_windows.go#L10-L11))
-**sobalink** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/webkaz-labs/sobalink/blob/50e869360c4e505dcffe47cc891611a2ebb4a126/internal/config/atomic_temp_windows.go#L217-L219))
-**aiClean** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/ttokunaga-ja/aiClean/blob/40c914096e1c06aa8720ea7d3714164bf68859f5/src/storage/core.rs#L1568-L1569))
-**sqlrs** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/kimak-irmagi/sqlrs/blob/45e281ee987b5e591583b66cb64ec52b3d81dfc0/backend/local-engine-go/internal/prepare/liquibase_projection_windows.go#L18-L19))
-**browsermining** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/CypherTroopers/browsermining/blob/9946c89ca55218320332ecb6048eb3fbc7b6379a/commonrpcreward/persist_windows.go#L18-L19))
+
+- **Boxset** — "syncDir cannot flush a directory on Windows and never reports that it did." ([source](https://github.com/ViktorsBaikers/Boxset/blob/606296805c76ff0bba47618a4e5e4657544e07af/internal/install/syncdir_windows.go#L10-L11))
+- **sobalink** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/webkaz-labs/sobalink/blob/50e869360c4e505dcffe47cc891611a2ebb4a126/internal/config/atomic_temp_windows.go#L217-L219))
+- **aiClean** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/ttokunaga-ja/aiClean/blob/40c914096e1c06aa8720ea7d3714164bf68859f5/src/storage/core.rs#L1568-L1569))
+- **sqlrs** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/kimak-irmagi/sqlrs/blob/45e281ee987b5e591583b66cb64ec52b3d81dfc0/backend/local-engine-go/internal/prepare/liquibase_projection_windows.go#L18-L19))
+- **browsermining** — "Windows does not support FlushFileBuffers on directory handles." ([source](https://github.com/CypherTroopers/browsermining/blob/9946c89ca55218320332ecb6048eb3fbc7b6379a/commonrpcreward/persist_windows.go#L18-L19))
+
 **gateway** — "Directory fsync is not available through os.File on Windows" — true of a read-only `os.File`, false as a platform statement. ([source](https://github.com/Blockamoto/gateway/blob/31153b345d11e93c46a4cea7dd9d56394fe88a0a/durable_windows.go#L5-L7))
+
 
 Not counted here: `calybris-core` (14★) says the standard library exposes no *portable* directory fsync, which is true of the portable API; `unmv` (0★) says "no generally supported equivalent" and explicitly disclaims crash consistency ("this is not a power-failure transaction"), so its decision stands even though a call exists.
 
