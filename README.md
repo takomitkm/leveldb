@@ -557,14 +557,18 @@
 > Real-hardware power loss and `ntfs.sys` replay behavior remain untested.
 
 >
+
+>
 > ### G. Why nobody did it: the stated reasons, verbatim (2026-11-15)
 >
-> Eight projects skip the parent-directory flush on Windows. Quoted exactly, at the commit each quote was read at, the justifications fall into four groups — and two of those groups cannot both be true.
+> Eleven projects were checked. Eight of them have a directory-flush hook that runs on Windows and does nothing; three have no Windows directory operation at all. Quoted exactly, at the commit each quote was read at.
+>
+> **A. The hook exists on Windows and does nothing**
 >
 > | Project | What the code says | Where |
 > |---|---|---|
 > | **SQLite** | `int syncDir /* Not used on win32 */`, then `UNUSED_PARAMETER(syncDir);` — no reason given | [os_win.c L4552–4563](https://github.com/sqlite/sqlite/blob/c5f86d0198519e70265ceaa3dbbfd14b283f3479/src/os_win.c#L4552-L4563) |
-> | **RocksDB** | `IOStatus WinDirectory::Fsync(...) { return IOStatus::OK(); }` — no stated reason | [io_win.cc L1085–1088](https://github.com/meta/rocksdb/blob/6eeb6d11f96f878a3def51c8945b5fe8a3b483ca/port/win/io_win.cc#L1085-L1088) |
+> | **RocksDB** | `IOStatus WinDirectory::Fsync(...) { return IOStatus::OK(); }` — no stated reason. The call site is unconditional: `dir->FsyncWithDirOptions(IOOptions(), nullptr, DirFsyncOptions(manifest_path))` | [io_win.cc L1085–1088](https://github.com/meta/rocksdb/blob/6eeb6d11f96f878a3def51c8945b5fe8a3b483ca/port/win/io_win.cc#L1085-L1088) · [version_set.cc L7249–7250](https://github.com/meta/rocksdb/blob/6eeb6d11f96f878a3def51c8945b5fe8a3b483ca/db/version_set.cc#L7249-L7250) |
 > | **libgit2** | `#ifdef GIT_WIN32` → `GIT_UNUSED(path); return 0;` — no stated reason | [futils.c L1205–1211](https://github.com/libgit2/libgit2/blob/42a89d7cc9374a19e72fa57011e5fe3a99c7b3bf/src/util/futils.c#L1205-L1211) |
 > | **Pebble** | "Silently ignore Sync() on Windows. This is the same behavior as RocksDB." | [default_windows.go L43–47](https://github.com/cockroachdb/pebble/blob/a995e890c06ef86c583927906e16e7f313083a3f/vfs/default_windows.go#L43-L47) |
 > | **Chromium** | "On Windows no need to sync directories. Their metadata will be updated when files are created, without an explicit sync." | [directory_impl.cc L253–256](https://github.com/chromium/chromium/blob/bc619944d74c8acd9683523c6b4b48fd34591b04/components/services/filesystem/directory_impl.cc#L253-L256) |
@@ -581,10 +585,16 @@
 >
 > Groups 3 and 4 are mutually exclusive, and group 4 is false as stated: a directory handle opened with `GENERIC_WRITE` + `FILE_FLAG_BACKUP_SEMANTICS` accepts `FlushFileBuffers` without administrator rights on NTFS, and the block-level tracing in section F shows the namespace entry reaching the device only in that arm. PostgreSQL's version is the narrowest and partly true — its own `open()`-based path does fail with EACCES on Windows — but the step from "our open fails" to "directories cannot be synced" is the same leap the other two make.
 >
-> The likeliest explanation for the spread is not eight independent engineering judgments but one documentation gap. MS-FSA §2.1.5.7 documents the behavior at the filesystem-implementer level (NTFS only, product note `<80>`, first draft 2009), and no Win32 reference page mentions directories at all: `FlushFileBuffers` describes files, and `CreateFile` documents `FILE_FLAG_BACKUP_SEMANTICS` for opening a directory but says nothing about flushing one. So the POSIX-shaped attempt — `open(dir, O_RDONLY)` then `fsync` — fails with `ERROR_ACCESS_DENIED`, which reads as "the platform does not support this", and the no-op gets written down with whatever rationale is nearest to hand.
+> **B. No Windows directory operation at all**
 >
-> Counted as a set: 8 projects, 3 silences, 1 deference, 1 "the OS already does it", 3 "the OS cannot". No group survived contact with the measurements.
+> | Project | What the code does | Where |
+> |---|---|---|
+> | **LMDB** | The Windows build maps file-level durability to `MDB_FDATASYNC(fd) = (!FlushFileBuffers(fd))`. There is no directory fsync anywhere in the library, on any platform — no `fsync(dir…)`, no directory handle, no equivalent. | [mdb.c L398](https://github.com/LMDB/lmdb/blob/74dd6c3ec648c31857fe0a100f11c2a34619e2d7/libraries/liblmdb/mdb.c#L398) · [L2918–2919](https://github.com/LMDB/lmdb/blob/74dd6c3ec648c31857fe0a100f11c2a34619e2d7/libraries/liblmdb/mdb.c#L2918-L2919) |
+> | **MySQL / InnoDB** | `os_parent_dir_fsync_posix()` and all six of its call sites (L2952, L3160, L3218, L3257, L3273, L3300) sit inside the `#ifndef _WIN32` branch of os0file.cc that starts at L2026 — the Windows build compiles none of it. The POSIX version opens the parent with `::open(parent_dir, O_RDONLY)` and calls `::fsync(dir_fd)`, i.e. exactly the call that cannot work on Windows. | [os0file.cc L2831–2864](https://github.com/mysql/mysql-server/blob/06bcb0eb0ad281e08dd2b4d81b99ad25491433e7/storage/innobase/os/os0file.cc#L2831-L2864) · [call site L2952](https://github.com/mysql/mysql-server/blob/06bcb0eb0ad281e08dd2b4d81b99ad25491433e7/storage/innobase/os/os0file.cc#L2952) |
+> | **CouchDB** | `couch_file:sync/1` opens the file with `[append, raw]` and calls `fsync(Fd)` — file-level only. The tree contains no directory-sync call at all (code search for `sync_dir` and `dirsync` returns zero hits), and Erlang exposes no primitive for it, so a fix here would need a NIF. | [couch_file.erl L285–296](https://github.com/apache/couchdb/blob/b54baba6607b7605f036998db1877079c99e6f6d/src/couch/src/couch_file.erl#L285-L296) |
 >
-> Rows record the state before the 2026-11 pull requests. restic ([#22177](https://github.com/restic/restic/pull/22177)) and kit ([#345](https://github.com/speakeasy-api/kit/pull/345)) are being changed by them; the same is proposed for [leveldb #1388](https://github.com/google/leveldb/pull/1388), [Pebble #6258](https://github.com/cockroachdb/pebble/pull/6258), [RocksDB #15682](https://github.com/meta/rocksdb/pull/15682), and SQLite ([bug-forum post](https://sqlite.org/bugs/forumpost/d8ebf597e52841a7e5f5c109bac75ee618680a95c0ecb83c4df6fe422c155bc9)).
+> The likeliest explanation for the whole spread is not eleven independent engineering judgments but one documentation gap. MS-FSA §2.1.5.7 documents the behavior at the filesystem-implementer level (NTFS only, product note `<80>`, first draft 2009), and no Win32 reference page mentions directories at all: `FlushFileBuffers` describes files, and `CreateFile` documents `FILE_FLAG_BACKUP_SEMANTICS` for opening a directory but says nothing about flushing one. So the POSIX-shaped attempt — `open(dir, O_RDONLY)` then `fsync` — fails with `ERROR_ACCESS_DENIED`, which reads as "the platform does not support this", and the no-op gets written down with whatever rationale is nearest to hand. MySQL's `::open(parent_dir, O_RDONLY)` is that exact call.
 >
-> Three further projects have no directory flush at all and no comment either: LMDB (file-level `MDB_FDATASYNC` maps to `FlushFileBuffers` + `FILE_FLAG_WRITE_THROUGH`), MySQL/InnoDB (`os_parent_dir_fsync_posix` exists but only under `#ifndef _WIN32`), and CouchDB (Erlang exposes no primitive for it, on any platform).
+> Counted as a set: 11 projects — 3 silences, 1 deference, 1 "the OS already does it", 3 "the OS cannot", and 3 with no Windows directory operation at all. No group survived contact with the measurements.
+>
+> Rows record the state before the 2026-11 pull requests. restic ([#22177](https://github.com/restic/restic/pull/22177)) and kit ([#345](https://github.com/speakeasy-api/kit/pull/345)) are being changed by them; the same is proposed for [leveldb #1388](https://github.com/google/leveldb/pull/1388), [Pebble #6258](https://github.com/cockroachdb/pebble/pull/6258), [RocksDB #15682](https://github.com/meta/rocksdb/pull/15682), and SQLite ([bug-forum post](https://sqlite.org/bugs/forumpost/d8ebf597e52841a7e5f5c109bac75ee618680a95c0ecb83c4df6fe422c155bc9)). MySQL has a patch on [my fork branch](https://github.com/takomitkm/mysql-server/tree/fix/windows-dirflush) that has not been proposed upstream yet; LMDB and CouchDB have patches or analysis in progress but nothing public.
