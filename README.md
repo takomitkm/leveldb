@@ -516,4 +516,13 @@
 > created* file's directory entry has no equivalent per-file flag, which is the gap leveldb's
 > manifest creation falls into — and why projects that rely on rename flags never needed the
 > directory flush.
-
+>
+> **Status update (added 2026-11-14, hours after this survey):** restic
+> ([PR #22177](https://github.com/restic/restic/pull/22177)) and kit
+> ([PR #345](https://github.com/speakeasy-api/kit/pull/345)) now have open
+> pull requests implementing exactly this sequence, and a fifth project
+> surfaced: [apache/maka#3898](https://github.com/apache/maka/issues/3898)
+> (5.9k stars) proposes the same for its storage layer. The rows above
+> record the state before those PRs. The precise framing is three-layer —
+> the capability and the NTFS-level behavior are documented, the Win32
+> persistence contract is not.
