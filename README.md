@@ -560,17 +560,20 @@ persistence contract is not.
 pull request fixing the two gaps recorded above —
 [PR #539](https://github.com/Dicklesworthstone/frankensqlite/pull/539). It adds
 two helpers with distinct semantics: `host_fs::sync_directory_handle(directory)`
-flushes the given directory itself (Unix opens it read-only and fsyncs; Windows
-opens with `GENERIC_WRITE` + `FILE_FLAG_BACKUP_SEMANTICS` and flushes), and
-`host_fs::sync_parent_directory(file_path)` parents the file and calls the
+flushes the given directory itself (Unix opens it read-only and fsyncs — the
+original upstream behavior; Windows makes a best-effort directory-handle flush),
+and `host_fs::sync_parent_directory(file_path)` parents the file and calls the
 former. The Windows VFS rename-over hook and the migration-backup paths call
-the appropriate one instead of their Windows no-ops. That PR also corrects the
-Unix branch of the migration-backup helper, which previously fsynced the file
-instead of its directory. After a review caught the parent-vs-self confusion in
-an earlier single-helper draft, the split was made and the Windows target was
-compile-checked (`cargo check --target x86_64-pc-windows-gnu`, red-green Iron
-Law) with a real-Windows runtime probe; the upstream Windows CI suite has not
-run yet, so the PR stays a draft.
+the appropriate one instead of their Windows no-ops. The original upstream Unix
+backup helper was already correct; an earlier single-helper revision of the PR
+introduced the off-by-one level error, which the split fixes. Windows has no
+published Win32 contract that a directory-handle flush persists a namespace
+entry, so the PR describes it as a measured NTFS best-effort attempt, not a
+POSIX `fsync` equivalent or a crash-durability guarantee, and only NTFS was
+tested. After a review caught the parent-vs-self confusion, the split was made
+and the Windows target was compile-checked (`cargo check --target
+x86_64-pc-windows-gnu`, red-green Iron Law) with a real-Windows runtime probe;
+the upstream Windows CI suite has not run yet, so the PR stays a draft.
 
 **Block-command tracing (added 2026-11-14): E14/E15.** The QEMU rig that could not
 produce data for E13 was replaced by one that can: the data disk runs under
