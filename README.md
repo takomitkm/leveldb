@@ -591,6 +591,15 @@ only observed operation that puts the namespace change on the device (the
 `go.txt`/source-file entries appear on the platter only in the arms that call it).
 Real-hardware power loss and `ntfs.sys` replay behavior remain untested.
 
+The complete rigs are archived in this repository under
+[docs/powercut/](docs/powercut/README.md) — the Linux QEMU power-cut model
+(E11; the "5/5 vs 8/8" figures, which are Linux evidence, not Windows), the
+E14/E15 Windows tracing rig (probe, launcher, log decoder, cut selection,
+autopsy, and the full result report `E14-RESULTS.md`), and the E17 probe
+that reproduces each database's patch shape (leveldb / SQLite / LMDB /
+PostgreSQL / MySQL / FrankenSQLite) plus its plan
+([E17-PLAN.md](docs/powercut/E17-PLAN.md)).
+
 ### G. Why nobody did it: the stated reasons, verbatim (2026-11-15)
 
 Thirty-six projects were checked. Twelve have a directory-flush hook that runs on Windows and does nothing — leveldb among them, and the one whose skip is currently being fixed upstream; ten have no Windows directory operation at all; thirteen more repeat the same sentences in a phrase sweep (part C); and one — etcd — does it, and does it the way this fork does. Quoted exactly, at the commit each quote was read at.
