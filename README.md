@@ -471,7 +471,11 @@ parameter is "Not used on win32"); LMDB (write-through flags, no directory sync)
 directories"); PostgreSQL
 ([`fd.c`](https://github.com/postgres/postgres/blob/master/src/backend/storage/file/fd.c#L3848):
 opens directories `O_RDONLY` with CRT `open()`, which fails on Windows with EACCES, so the
-error is ignored).
+error is ignored). One SQLite derivative was checked and found to introduce **no** new gap:
+libSQL (Turso) bundles SQLite 3.47.0 as `sqlite3.c` (its POSIX `DIRSYNC` machinery intact) and its
+custom `libsql_wal` VFS only delegates to SQLite's WAL — a repo-wide search finds no
+libSQL-authored rename-over commit path that would bypass the core, so the POSIX directory flush is
+inherited unchanged and no Windows-specific gap is added.
 
 *Outside the DB lineage — four independent implementations do it.*
 [deltabox-lite](https://github.com/delta-box/deltabox-lite/blob/main/crates/deltabox-core/src/windows/durability.rs)
@@ -504,7 +508,16 @@ believes Rust's `std` cannot open a directory;
 [unmv](https://github.com/mevanlc/unmv/blob/main/src/platform/windows.rs#L984) says there is
 "no generally supported directory fsync equivalent";
 [kit](https://github.com/speakeasy-api/kit/blob/main/src/resilient_fs/backend.rs#L671) says
-"Windows does not support FlushFileBuffers on directory handles". None of these matches the
+"Windows does not support FlushFileBuffers on directory handles"; **FrankenSQLite** ([`windows.rs`](https://github.com/Dicklesworthstone/frankensqlite/blob/eb5782e1a1e6270e94b3e614e1455384db1e4f64/crates/fsqlite-vfs/src/windows.rs#L1564-L1580):
+`sync_parent_directory` is an explicit `Ok(())` no-op, "Win32 does not expose a portable
+fsync-directory operation … Keep the namespace hook an explicit no-op rather than attempting
+FlushFileBuffers on a directory handle (unsupported on common filesystems and liable to return
+ERROR_INVALID_HANDLE)") and [`backup.rs`](https://github.com/Dicklesworthstone/frankensqlite/blob/eb5782e1a1e6270e94b3e614e1455384db1e4f64/crates/fsqlite-core/src/migration/backup.rs#L428-L435)
+(`sync_directory` fsyncs the parent on `#[cfg(unix)]`, no-ops on `#[cfg(not(unix))]`, "there is
+no portable directory fsync … not a power-loss proof"). The project is a from-scratch Rust
+reimplementation of SQLite (not a fork), supports Windows as a first-class target, and its
+commit/publication path uses `std::fs::rename` for atomic replacement — so the Unix path
+[`epoch.rs`](https://github.com/Dicklesworthstone/frankensqlite/blob/eb5782e1a1e6270e94b3e614e1455384db1e4f64/crates/fsqlite-core/src/epoch.rs#L890-L892) does fsync the parent after the rename while the Windows path silently skips it, the same gap the rest of this section documents. None of the skip reasons above matches the
 two probes: the call works, non-admin, with `GENERIC_WRITE`.
 
 **What this means for `30b34e0`.** The same
@@ -561,7 +574,7 @@ Real-hardware power loss and `ntfs.sys` replay behavior remain untested.
 
 ### G. Why nobody did it: the stated reasons, verbatim (2026-11-15)
 
-Thirty-five projects were checked. Eleven have a directory-flush hook that runs on Windows and does nothing — leveldb among them, and the one whose skip is currently being fixed upstream; ten have no Windows directory operation at all; thirteen more repeat the same sentences in a phrase sweep (part C); and one — etcd — does it, and does it the way this fork does. Quoted exactly, at the commit each quote was read at.
+Thirty-six projects were checked. Twelve have a directory-flush hook that runs on Windows and does nothing — leveldb among them, and the one whose skip is currently being fixed upstream; ten have no Windows directory operation at all; thirteen more repeat the same sentences in a phrase sweep (part C); and one — etcd — does it, and does it the way this fork does. Quoted exactly, at the commit each quote was read at.
 
 **A. The hook exists on Windows and does nothing**
 
@@ -578,6 +591,7 @@ Thirty-five projects were checked. Eleven have a directory-flush hook that runs 
 | **BadgerDB** | "Windows doesn't support syncing directories to the file system." — the whole Windows implementation is `func syncDir(dir string) error { return nil }`, and the comment points at the 2019 issue where the question was first asked with a C program. The POSIX side does the real thing (`f.Sync()` on the opened directory), and `syncDir()` is called exactly where leveldb's gap is — right after the MANIFEST file is created | [dir_windows.go L98–100](https://github.com/dgraph-io/badger/blob/78b99b8b0f014b539455186404697a0ff58c55f2/dir_windows.go#L98-L100) · [dir_unix.go L93–108](https://github.com/dgraph-io/badger/blob/78b99b8b0f014b539455186404697a0ff58c55f2/dir_unix.go#L93-L108) · [manifest.go L299](https://github.com/dgraph-io/badger/blob/78b99b8b0f014b539455186404697a0ff58c55f2/manifest.go#L299) |
 | **Lucene** (Apache, the search library behind Elasticsearch) | `IOUtils.fsync(fileToSync, isDir)` returns early on Windows: "opening a directory on Windows fails, directories can not be fsynced there" — the check is `if (isDir && Constants.WINDOWS)`, and the call site is `FSDirectory.syncMetaData()` | [IOUtils.java L522–533](https://github.com/apache/lucene/blob/781025d6fe32641b495c9dab2f43525f464f324d/lucene/core/src/java/org/apache/lucene/util/IOUtils.java#L522-L533) · [FSDirectory.java L268–274](https://github.com/apache/lucene/blob/781025d6fe32641b495c9dab2f43525f464f324d/lucene/core/src/java/org/apache/lucene/store/FSDirectory.java#L268-L274) |
 | **Cassandra** (Apache) | `SyncUtil.trySyncDir(File)` calls `NativeLibrary.tryOpenDirectory()`; on Windows the JNA `open()` of a directory fails, the error is swallowed, the fd comes back as −1 and `trySync(fd)` returns immediately — a silent no-op. The stated reason is not about directories at all: `NativeLibrary` logs "the current operating system, windows, is unsupported by Cassandra" | [SyncUtil.java L117–125](https://github.com/apache/cassandra/blob/2249e37b51af9fd2a72865bbb56c1197e0d0d1ed/src/java/org/apache/cassandra/utils/SyncUtil.java#L117-L125) · [NativeLibrary.java L144–149](https://github.com/apache/cassandra/blob/2249e37b51af9fd2a72865bbb56c1197e0d0d1ed/src/java/org/apache/cassandra/utils/NativeLibrary.java#L144-L149) · [L325–328](https://github.com/apache/cassandra/blob/2249e37b51af9fd2a72865bbb56c1197e0d0d1ed/src/java/org/apache/cassandra/utils/NativeLibrary.java#L325-L328) |
+| **FrankenSQLite** | "Win32 does not expose a portable fsync-directory operation. SQLite's own Windows VFS establishes journal create/delete durability through FlushFileBuffers on the journal handle … Keep the namespace hook an explicit no-op rather than attempting FlushFileBuffers on a directory handle (unsupported on common filesystems and liable to return ERROR_INVALID_HANDLE)." — a from-scratch Rust reimplementation of SQLite (not a fork); the Unix commit path fsyncs the parent after a `std::fs::rename` ([epoch.rs L890–892](https://github.com/Dicklesworthstone/frankensqlite/blob/eb5782e1a1e6270e94b3e614e1455384db1e4f64/crates/fsqlite-core/src/epoch.rs#L890-L892)), while the Windows hook is the no-op quoted here, so Windows silently loses the directory entry a rename-over commit relies on | [windows.rs L1564–1580](https://github.com/Dicklesworthstone/frankensqlite/blob/eb5782e1a1e6270e94b3e614e1455384db1e4f64/crates/fsqlite-vfs/src/windows.rs#L1564-L1580) · [backup.rs L428–435](https://github.com/Dicklesworthstone/frankensqlite/blob/eb5782e1a1e6270e94b3e614e1455384db1e4f64/crates/fsqlite-core/src/migration/backup.rs#L428-L435) |
 
 Sorted by what the reason actually claims:
 
