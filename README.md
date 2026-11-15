@@ -558,13 +558,19 @@ persistence contract is not.
 
 **Status update (added 2026-11-15):** FrankenSQLite now has an open draft
 pull request fixing the two gaps recorded above —
-[PR #539](https://github.com/Dicklesworthstone/frankensqlite/pull/539): a new
-`host_fs::sync_directory` helper (Unix opens the parent read-only and fsyncs
-it; Windows opens with `GENERIC_WRITE` + `FILE_FLAG_BACKUP_SEMANTICS` and
-flushes) repoints `WindowsVfs::sync_parent_directory` and the migration-backup
-`sync_directory` away from their Windows no-ops. That PR also corrects the
+[PR #539](https://github.com/Dicklesworthstone/frankensqlite/pull/539). It adds
+two helpers with distinct semantics: `host_fs::sync_directory_handle(directory)`
+flushes the given directory itself (Unix opens it read-only and fsyncs; Windows
+opens with `GENERIC_WRITE` + `FILE_FLAG_BACKUP_SEMANTICS` and flushes), and
+`host_fs::sync_parent_directory(file_path)` parents the file and calls the
+former. The Windows VFS rename-over hook and the migration-backup paths call
+the appropriate one instead of their Windows no-ops. That PR also corrects the
 Unix branch of the migration-backup helper, which previously fsynced the file
-instead of its parent directory.
+instead of its directory. After a review caught the parent-vs-self confusion in
+an earlier single-helper draft, the split was made and the Windows target was
+compile-checked (`cargo check --target x86_64-pc-windows-gnu`, red-green Iron
+Law) with a real-Windows runtime probe; the upstream Windows CI suite has not
+run yet, so the PR stays a draft.
 
 **Block-command tracing (added 2026-11-14): E14/E15.** The QEMU rig that could not
 produce data for E13 was replaced by one that can: the data disk runs under
