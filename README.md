@@ -556,6 +556,16 @@ record the state before those PRs. The precise framing is three-layer —
 the capability and the NTFS-level behavior are documented, the Win32
 persistence contract is not.
 
+**Status update (added 2026-11-15):** FrankenSQLite now has an open draft
+pull request fixing the two gaps recorded above —
+[PR #539](https://github.com/Dicklesworthstone/frankensqlite/pull/539): a new
+`host_fs::sync_directory` helper (Unix opens the parent read-only and fsyncs
+it; Windows opens with `GENERIC_WRITE` + `FILE_FLAG_BACKUP_SEMANTICS` and
+flushes) repoints `WindowsVfs::sync_parent_directory` and the migration-backup
+`sync_directory` away from their Windows no-ops. That PR also corrects the
+Unix branch of the migration-backup helper, which previously fsynced the file
+instead of its parent directory.
+
 **Block-command tracing (added 2026-11-14): E14/E15.** The QEMU rig that could not
 produce data for E13 was replaced by one that can: the data disk runs under
 `blklogwrites`, so every `WRITE`/`FLUSH`/`FUA` the guest issues is recorded, and the
