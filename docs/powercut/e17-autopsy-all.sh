@@ -16,10 +16,16 @@ echo "RO:"
 sudo mount -t ntfs-3g -o ro,norecover ${LOOP}p1 /mnt/e17a 2>&1 | head -1
 ls /mnt/e17a/e14/ 2>&1 | sort | tr "\n" ";"
 echo ""
+echo "D16-RO:"
+ls /mnt/e17a/e14/d16/ 2>&1 | sort | tr "\n" ";"
+echo ""
 sudo umount /mnt/e17a >/dev/null 2>&1
 echo "RW:"
 sudo mount -t ntfs-3g ${LOOP}p1 /mnt/e17a 2>&1 | head -1
 ls /mnt/e17a/e14/ 2>&1 | sort | tr "\n" ";"
+echo ""
+echo "D16-RW:"
+ls /mnt/e17a/e14/d16/ 2>&1 | sort | tr "\n" ";"
 echo ""
 sudo umount /mnt/e17a >/dev/null 2>&1
 sudo losetup -d $LOOP >/dev/null 2>&1

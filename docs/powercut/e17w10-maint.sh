@@ -4,7 +4,7 @@
 # E17INSTALLED marker then force-kills (the golden keeps the change).
 set -u
 T=<TASKDIR>
-export PATH="<MSYS2>/ucrt64/bin:<MSYS2>/usr/bin:$PATH"
+export PATH="<HOSTDIR>/MSYS2/ucrt64/bin:<HOSTDIR>/MSYS2/usr/bin:$PATH"
 cd "$T" || exit 2
 exec > "$T/e17w10-maint.log" 2>&1
 

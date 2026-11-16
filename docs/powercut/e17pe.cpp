@@ -215,8 +215,31 @@ static BOOL FlushDirLmdbShape(const char* dir, DWORD* open_err, DWORD* flush_err
   return TRUE;
 }
 
-static int RunArm(int arm, int rep, const char* dir, char* note) {
-  char path[96], src[96], dst[96], deldir[96], body[64], root[8];
+/* arm 16/17 pre-state: build d16 with 200 entries (forces the $I30 index
+ * out of the directory's MFT record into $INDEX_ALLOCATION pages), then make
+ * the whole pre-state durable via the root flush (arm 11 recipe).  Runs
+ * BEFORE the reps loop, so none of it pollutes the measured windows. */
+static void MakeD16(const char* dir, const char* root) {
+  char d16[80], p[96];
+  DWORD oe = 0, fe = 0;
+  snprintf(d16, sizeof d16, "%s\\d16", dir);
+  CreateDirectoryA(d16, nullptr);
+  for (int k = 0; k < 200; ++k) {
+    snprintf(p, sizeof p, "%s\\p%03d.bin", d16, k);
+    HANDLE h = CreateFileA(p, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) continue;
+    char buf[40];
+    int n = snprintf(buf, sizeof buf, "pad-%03d", k);
+    DWORD w = 0;
+    WriteFile(h, buf, (DWORD)n, &w, nullptr);
+    CloseHandle(h);
+  }
+  FlushDirShape(d16, &oe, &fe);
+  FlushDirShape(dir, &oe, &fe);
+  FlushDirShape(root, &oe, &fe);
+}
+
+static int RunArm(int arm, int rep, const char* dir, char* note) {  char path[96], src[96], dst[96], deldir[96], body[64], root[8];
   DWORD oe = 0, fe = 0;
   snprintf(root, sizeof root, "%c:\\", g_vol);
 
@@ -429,6 +452,30 @@ static int RunArm(int arm, int rep, const char* dir, char* note) {
     if (!FlushDirShape(root, &oe, &fe)) return 115;
     return 0;
   }
+  case 16: {  /* non-resident $I30 + PARENT-dir-only flush.  d16 was
+               * pre-loaded with 200 entries and made durable (root flush)
+               * before the reps loop, so the ONLY dirty namespace object in
+               * the window is the new file.  Does residency change what the
+               * parent-dir flush does? */
+    char d16[80], path[112], body[80];
+    snprintf(d16, sizeof d16, "%s\\d16", dir);
+    snprintf(path, sizeof path, "%s\\a16_r%d.bin", d16, rep);
+    snprintf(body, sizeof body, "e17-a16-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    if (!FlushDirShape(d16, &oe, &fe)) return (int)((oe ? oe : fe) ? (oe ? oe : fe) : 116);
+    return 0;
+  }
+  case 17: {  /* non-resident $I30 + parent + root flush (corrected protocol
+               * on a large directory).  Verdict: a17_rN.bin PRESENT. */
+    char d16[80], path[112], body[80];
+    snprintf(d16, sizeof d16, "%s\\d16", dir);
+    snprintf(path, sizeof path, "%s\\a17_r%d.bin", d16, rep);
+    snprintf(body, sizeof body, "e17-a17-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    FlushDirShape(d16, &oe, &fe);
+    if (!FlushDirShape(root, &oe, &fe)) return 117;
+    return 0;
+  }
   case 90: {  /* INSTALLER (maintenance boot): copy SELF (the exe inside the
                * PE ramdisk, X:\e13pe.exe) to the full-Windows OS volume's
                * \e14\e14pe3.exe so the golden image's ONSTART task runs the
@@ -484,6 +531,11 @@ int main(void) {
   char dir[32];
   snprintf(dir, sizeof dir, "%c:\\e14", g_vol);
   CreateDirectoryA(dir, nullptr);
+  if (arm == 16 || arm == 17) {
+    char rootp[8];
+    snprintf(rootp, sizeof rootp, "%c:\\", g_vol);
+    MakeD16(dir, rootp);
+  }
 
   char m[256];
   int errs[16] = {0};
