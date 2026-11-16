@@ -10,7 +10,7 @@ T = r'<TASKDIR>'
 sys.path.insert(0, T)
 from e14_analyze import load_records
 
-ARMS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+ARMS = tuple(int(x) for x in (__import__('os').environ.get('ARMS', '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15').split(',')))
 
 
 def find(recs, tag):
@@ -18,7 +18,7 @@ def find(recs, tag):
 
 
 for arm in ARMS:
-    path = os.path.join(T, f'e17-log-a{arm}.img')
+    path = os.path.join(T, __import__('os').environ.get('PREFIX', 'e17') + f'-log-a{arm}.img')
     if not os.path.exists(path):
         print(f'arm={arm}: no log')
         continue

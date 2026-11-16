@@ -28,7 +28,7 @@ rm -f /tmp/c17.img
 
 for arm in ${ARMS:-0 1 2 3 4 5 6 7 8 9 10}; do
   for cut in worst best; do
-    f="e17-crash-a${arm}-${cut}.img"
+    f="${PREFIX:-e17}-crash-a${arm}-${cut}.img"
     [ -f "$f" ] || { echo "MISS $f"; continue; }
     echo "==== a${arm}-${cut} $(date '+%H:%M:%S') ===="
     $G/gssh.sh "rm -f /tmp/c17.img" >/dev/null 2>&1

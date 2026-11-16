@@ -66,6 +66,25 @@ MFT 区（<8MiB）写入按轮窗口计数。探针源码 `e17pe.cpp`（16 臂�
    - 五家补丁的形状差异（相对路径/GetFinalPathNameByHandle/_commit(fd)）在设备级**零差异**
      （臂 2/3/4 与臂 1 逐字同结果）——差异全在 flush 的**对象**，不在路径解析或 fd 层。
 
+3b. **完整 Windows 10 Pro 22H2 复测：全部结论逐字复现**（2026-11-17 05:05–05:33 增补）。
+   复用 E15 的 Win10 金身盘（os-golden.raw，64G raw，每臂 qcow2 overlay 丢弃），探针经
+   维护靴（臂 90 安装器，50 秒完成，size 对拍一致）写入金身盘的 ONSTART 任务路径；
+   数据盘与臂号协议与 WinPE 完全相同。5 臂 × 3 轮全部 `errs=0,0,0`，每臂 50 秒出 DONE：
+
+   | 臂 | MFT区写/轮（W10） | 裸盘验尸（W10，worst=best） | WinPE 对照 |
+   |---|---|---|---|
+   | 1 单刷父目录 | **0, 0, 0** | arm.txt only（文件不在盘） | 同 |
+   | 11 只刷卷根 | 5, 3, 3 | **a11_r0.bin + go.txt 在盘** | 同 |
+   | 13 父目录刷两次 | 0, 0, 0 | arm.txt only | 同 |
+   | 14 rename+父+卷根 | 7, 5, 7 | **a14_r0_dst.bin 在盘、src 消失** | 同 |
+   | 15 删除+父+卷根 | 8, 6, 6 | **a15_r0.bin 从盘上消失** | 同 |
+
+   MFT 写入落点与 WinPE 完全相同（1056768/1101824/1130496 等 = 同一批 MFT 记录，同一块
+   基准盘）。即：**"父目录刷无效、卷根刷有效"是完整 Windows 栈（含完整 ntfs.sys/服务栈/
+   storahci 路径）上的行为，不只是 WinPE 的简化栈。** W10 镜像的 ntfs-3g RW 重放挂载在
+   unclean 警告后失败（WinPE 镜像可重放）——RO,norecover 的裸盘判定不受影响，且 worst/best
+   双切点一致；RW 失败如实记录为 caveat。
+
 4. **对本系列 12 个 PR 的直接含义**：这些补丁当前形状（刷父目录）在这套栈上不提供设备级
    耐久——要落地真耐久需要把 flush 对象改为**卷根**（或在父目录刷后追加一次卷根刷），
    或者如实把补丁降级为"行为对齐 POSIX、耐久性未证"。真机（NVMe/Win11/ReFS）上的
@@ -74,21 +93,29 @@ MFT 区（<8MiB）写入按轮窗口计数。探针源码 `e17pe.cpp`（16 臂�
 ## 三、Caveats（如实记录）
 
 - WinPE + QEMU IDE + TCG 栈：FUA=0（全程），flush 语义与真 NVMe 栈可能不同。
-- ntfs-3g 重放 ≠ ntfs.sys 重放；但"盘上有什么字节"与 OS 无关，是硬证据。
+- 完整 Win10 22H2 栈的 IDE/TCG 复测同上；两个栈的 guest 存储路径都是 storahci/IDE，
+  virtio/NVMe 设备模型未测。
+- ntfs-3g 重放 ≠ ntfs.sys 重放；且 W10 镜像的 ntfs-3g RW 挂载在 unclean 警告后失败
+  （WinPE 镜像可重放）。"盘上有什么字节"与 OS 无关，RO,norecover 是硬证据，worst/best
+  双切点全一致。
 - crash 镜像只做了 rep0（worst/best 双切点），rep1/2 仅日志级判读（与 rep0 同形）。
 - 臂 5/8 的删除可判性缺陷：耐久前置态用的单刷不落盘（当时还不知道单刷无效），
   删除语义由臂 15（双刷前置态）补测成立。
-- 验尸时 ntfs-3g 对脏卷的 RW 挂载打印 `unclean (0,0)` 警告后正常重放；所有镜像 RO/RW
-  结论一致。
+- 验尸时 ntfs-3g 对脏卷的 RW 挂载打印 `unclean (0,0)` 警告后正常重放（WinPE 镜像）；
+  所有镜像 RO/RW 结论一致（W10 镜像 RW 不可用，见上）。
 - 根目录 flush 的**代价**未测（卷级刷写预计远贵于单目录刷，E14 量过单目录刷 0.66–3.5ms）——
   改补丁形状前必须补代价测量。
-- 真硬件（NVMe/Win11/ReFS/SMB）未测；本结论限 WinPE/TCG/IDE/NTFS。
+- 真硬件（NVMe/Win11/ReFS/SMB）未测；本结论限 QEMU IDE/TCG + WinPE 19041 内核 +
+  完整 Win10 Pro 22H2（19045.2965）。Win11 的 ntfs.sys 未测。
 
 ## 四、产物位置
 
 - 校机 `<TASKDIR>\`：e17-{base,vm,log}-a{0..15}.img、
   e17-crash-a{0..15}-{worst,best}.img（32 张）、e17-run-a*.log、e17-all.log、
-  e17-autopsy-all.log、探针 e17pe.cpp/e17pe.exe、ISO pe-e17.iso、e17-phase{1,1b,1c,2}.log。
+  e17-autopsy-all.log、探针 e17pe.cpp/e17pe.exe、ISO pe-e17.iso、e17-phase{1,1b,1c,2}.log；
+  W10 复测：e17w10-{log,datadisk,base}-a{1,11,13,14,15}.img、e17w10-crash-a*-{worst,best}.img
+  （10 张）、e17w10-all.log、e17w10-run-a*.log、e17w10-autopsy.log、e17w10-maint.log、
+  e17w10-launch.ps1/e17w10-arm.sh/e17w10-all.sh/e17w10-maint.sh。
 - 本机 `S:\apps\llm\agentwork\.tmp\lvl-fb\`：探针与全套驱动/分析器（已同步 fork
   `docs/powercut/`）；本报告。
 - 仓库归档：takomitkm/leveldb `docs/powercut/`（E11/E14/E17 全套 + 本报告）。

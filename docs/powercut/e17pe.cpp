@@ -429,6 +429,45 @@ static int RunArm(int arm, int rep, const char* dir, char* note) {
     if (!FlushDirShape(root, &oe, &fe)) return 115;
     return 0;
   }
+  case 90: {  /* INSTALLER (maintenance boot): copy SELF (the exe inside the
+               * PE ramdisk, X:\e13pe.exe) to the full-Windows OS volume's
+               * \e14\e14pe3.exe so the golden image's ONSTART task runs the
+               * new probe.  OS volume = the NTFS volume carrying
+               * \Windows\System32 (never the E13SYS data volume, never X:).
+               * Marker records the written size for read-back verification. */
+    char osvol = 0;
+    for (char c = 'C'; c <= 'Z'; ++c) {
+      if (c == 'X' || c == g_vol) continue;
+      char p[8] = {'c', ':', '\\', 0};
+      char chk[64];
+      p[0] = c;
+      snprintf(chk, sizeof chk, "%sWindows\\System32", p);
+      DWORD attr = GetFileAttributesA(chk);
+      if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        char lbl[64] = "", fs[64] = "";
+        if (GetVolumeInformationA(p, lbl, sizeof lbl, nullptr, nullptr, nullptr, fs, sizeof fs)
+            && _stricmp(fs, "NTFS") == 0) { osvol = c; break; }
+      }
+    }
+    if (!osvol) return 900;
+    char self[MAX_PATH];
+    if (!GetModuleFileNameA(nullptr, self, MAX_PATH)) return 901;
+    char dstp[64], dird[8];
+    snprintf(dird, sizeof dird, "%c:\\e14", osvol);
+    snprintf(dstp, sizeof dstp, "%s\\e14pe3.exe", dird);
+    CreateDirectoryA(dird, nullptr);
+    if (!CopyFileA(self, dstp, FALSE)) return 902;
+    HANDLE h = CreateFileA(dstp, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return 903;
+    DWORD sz = GetFileSize(h, nullptr);
+    CloseHandle(h);
+    char body[96];
+    snprintf(body, sizeof body, "E17INSTALLED size=%lu os=%c:",
+             (unsigned long)sz, osvol);
+    Marker("installed.txt", body);
+    return 0;
+  }
   }
   return 0;
 }
