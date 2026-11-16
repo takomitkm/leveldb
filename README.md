@@ -597,8 +597,24 @@ The complete rigs are archived in this repository under
 E14/E15 Windows tracing rig (probe, launcher, log decoder, cut selection,
 autopsy, and the full result report `E14-RESULTS.md`), and the E17 probe
 that reproduces each database's patch shape (leveldb / SQLite / LMDB /
-PostgreSQL / MySQL / FrankenSQLite) plus its plan
-([E17-PLAN.md](docs/powercut/E17-PLAN.md)).
+PostgreSQL / MySQL / FrankenSQLite) with its results
+([E17-RESULTS.md](docs/powercut/E17-RESULTS.md)).
+
+**Status update (added 2026-11-17): E17 revises the attribution above.** E17
+ran sixteen arms on the same rig, including controlled variants that flush
+different objects. A single `FlushFileBuffers` on the **parent directory** —
+the exact sequence this fork's `SyncDirIfManifest()` and the five database
+patches perform — produced **zero device-level metadata writes** (arms
+1-5, 7-8, 13: the file's data is barriered, its directory entry stays in
+memory). The platter effect E14 observed comes specifically from
+`FlushFileBuffers` on the **volume root** (arm 11: a root flush alone
+persists the file; arm 13: flushing the parent directory twice does
+nothing; arm 14: rename followed by parent+root flush persists the new
+name; arm 15: a durable delete followed by parent+root flush persists the
+deletion). The likely mechanism is that ntfs.sys treats a root-directory
+handle flush as a volume-level flush, while a subdirectory handle flush
+covers only that directory's own streams. All E17 findings are WinPE/TCG/IDE
+specific; real hardware is untested, and a root flush's cost is unmeasured.
 
 ### G. Why nobody did it: the stated reasons, verbatim (2026-11-15)
 

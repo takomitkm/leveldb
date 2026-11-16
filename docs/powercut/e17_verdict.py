@@ -27,13 +27,21 @@ F_FLUSH, F_FUA, F_DISCARD = 1, 2, 4
 
 ARM_NAMES = {
     0: 'BASELINE_NODIRSYNC (flush file only)',
-    1: 'LEVELDB30B34E0/SQLITE/MYSQL/FRANKEN dir-handle flush',
+    1: 'LEVELDB30B34E0/SQLITE/MYSQL/FRANKEN dir-handle flush (create)',
     2: 'SQLITE_S7 relative-path + "." dir flush',
     3: 'LMDB_MDIRSYNC flush + GetFinalPathNameByHandleW',
     4: 'PG_TRANSIENT_FD _commit(fd) route',
-    5: 'MYSQL_DELETE_DANCE MoveFileW+DeleteFileW + parent flush',
+    5: 'MYSQL_DELETE_DANCE durable->dance->parent flush',
     6: 'RENAME_WRITE_THROUGH only',
     7: 'MYSQL_CREATEDIR mkdir + parent flush',
+    8: 'DELETE_NOFLUSH control (durable->DeleteFileA)',
+    9: 'MKDIR_NOFLUSH control (CreateDirectory only)',
+    10: 'RENAME_DIRFLUSH durable src->rename->dir flush',
+    11: 'CREATE_ROOTFLUSH flush file then root dir only',
+    12: 'CREATE_DIRPLUSROOT dir+root flush after create',
+    13: 'CREATE_DIRFLUSH_X2 dir flush twice after create',
+    14: 'RENAME_DIRPLUSROOT rename then dir+root flush',
+    15: 'DELETE_DIRPLUSROOT durable->delete->dir+root flush',
 }
 
 
@@ -94,7 +102,7 @@ def analyze(arm, reps=3, prefix='e17'):
     return ss, recs, n, results
 
 
-def build_images(arms=(0,1,2,3,4,5,6,7), rep=0, prefix='e17'):
+def build_images(arms=(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15), rep=0, prefix='e17'):
     for arm in arms:
         res = analyze(arm, prefix=prefix)
         if not res:
@@ -127,7 +135,7 @@ def build_images(arms=(0,1,2,3,4,5,6,7), rep=0, prefix='e17'):
                   f'({sum(1 for x in recs[:cut] if x[1])} writes)')
 
 
-def report(arms=(0,1,2,3,4,5,6,7), prefix='e17'):
+def report(arms=(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15), prefix='e17'):
     for arm in arms:
         analyze(arm, prefix=prefix)
 

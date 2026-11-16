@@ -8,7 +8,7 @@ its README claims. Three generations, one question each:
 |---|---|---|---|
 | **E11** (Linux QEMU power-cut model) | Does rename + directory `fsync` survive a power cut on a POSIX FS? | Linux guest (ext4), probe `e11-probe.c`: rename → optional `fsync(dir)` → host kills QEMU → reboot autopsy | sync arm 5/5 SURVIVED, nosync arm 8/8 LOST (`e11_v2.sh` fixed the v1 harness bug where unsynced binaries were judged). Demonstrates the mechanism discriminates; **Linux evidence, not Windows** |
 | **E14/E15** (Windows block-command tracing) | On NTFS, which operation actually puts a namespace change on the device? | QEMU `blklogwrites` records every WRITE/FLUSH/FUA the guest issues; arm id via SMBIOS serial; the power-cut instant is an **offline cut** of the log (worst = up to the last barrier, best = everything the device received); ntfs-3g double-mount autopsy (ro,norecover = raw platter / rw = replayed). Ran on WinPE and full Windows 10 Pro 22H2, six arms, three reps each, identical results | `FlushFileBuffers(file)` covers data but not the directory entry; `MOVEFILE_WRITE_THROUGH` rename issues **no flush and no FUA**; the **directory-handle flush is the only observed operation that puts the namespace change on the device**. Full report: [E14-RESULTS.md](E14-RESULTS.md) |
-| **E17** (per-DB shape verification, planned) | Do the exact API sequences each database's Windows dir-flush patch uses (leveldb 30b34e0 / SQLite / LMDB / PostgreSQL / MySQL / FrankenSQLite) behave the same way, including **delete** and **mkdir** namespace changes? | Same rig as E14, new probe `e17pe.cpp` with 8 arms reproducing each patch's literal call sequence; error codes embedded in markers | Plan: [E17-PLAN.md](E17-PLAN.md); results pending |
+| **E17** (per-DB shape verification, completed 2026-11-17) | Do the exact API sequences each database's Windows dir-flush patch uses (leveldb 30b34e0 / SQLite / LMDB / PostgreSQL / MySQL / FrankenSQLite) put the namespace change on the device — including **delete** and **mkdir**? | Same rig as E14, probe `e17pe.cpp` with 16 arms reproducing each patch's literal call sequence plus controlled disambiguation arms (flush parent dir vs flush volume root); error codes embedded in markers | **The five patches' shared shape — a single `FlushFileBuffers` on the parent directory — produced ZERO device-level metadata writes** (arms 1-5, 7-8, 13: file data barriered, namespace not on platter). The platter effect comes specifically from `FlushFileBuffers` on the **volume root** (arm 11: root flush alone persists the file; arm 13: parent-dir flush twice does nothing). Corrected protocols verified: rename + parent+root flush persists the dst (arm 14), durable delete + parent+root flush persists the deletion (arm 15). **This revises E14's attribution**: E14's positive signal came from its pre-state's root flush, not from the parent-directory flush. Full report: [E17-RESULTS.md](E17-RESULTS.md) |
 
 ## What ran where
 
@@ -40,11 +40,13 @@ its README claims. Three generations, one question each:
 - `e14v3-autopsy.sh` — Debian-side ntfs-3g double-mount autopsy
 - `E14-RESULTS.md` — the full result report (six-arm table, autopsy, caveats)
 
-### E17 (per-DB shapes, eight arms 0-7, not yet run)
-- `e17pe.cpp` — probe reproducing each DB patch's literal API sequence
-- `e17-run.sh` / `e17-launch.ps1` / `e17_gbld.sh` / `e17-phase1.sh` / `e17-autopsy.sh` — same rig plumbing, E17 naming
-- `e17_verdict.py` — verdict driver for arms 0-7
+### E17 (per-DB shapes, sixteen arms 0-15, completed 2026-11-17)
+- `e17pe.cpp` — probe reproducing each DB patch's literal API sequence plus the flush-target disambiguation arms (11-15)
+- `e17-run.sh` / `e17-launch.ps1` / `e17-all.sh` / `e17-start.ps1` / `e17_gbld.sh` / `e17-phase1.sh` / `e17-phase1b.sh` / `e17-phase1c.sh` / `e17-phase2.sh` / `e17-autopsy-all.sh` / `e17-autopsy.sh` / `e17-autopsy-start.ps1` — same rig plumbing, E17 naming (the ISO is rebuilt from the proven pe-e14v3.iso tree: xorriso extract + dd of the hidden El Torito image + WIM probe swap)
+- `e17_verdict.py` — verdict driver for arms 0-15
+- `e17_mftzone.py` — per-arm MFT-zone (<8 MiB) write counter, split by rep window vs park window
 - `E17-PLAN.md` — arm table, expected results, and the provenance notes for each DB's patch shape
+- `E17-RESULTS.md` — the full result report: the parent-directory flush alone has no device-level effect; the volume-root flush does; corrected create/rename/delete protocols; revision of the E14 attribution
 
 Paths inside the scripts appear as `<HOSTDIR>` / `<TASKDIR>` / `<QEMUDIR>` /
 `<guest>` placeholders — substitute your own layout (a Windows host with MSYS2

@@ -12,28 +12,39 @@
  * Arms (each = the literal API sequence one DB's patch performs):
  *   0  BASELINE_NODIRSYNC  create+write+FlushFileBuffers(file) — upstream
  *                          leveldb/SQLite/RocksDB-before-fix behavior (control)
- *   1  LEVELDB_30B34E0     create+write+flush(file) + GENERIC_WRITE dir handle
- *                          flush (leveldb 30b34e0 / SQLite winSyncDirectory /
- *                          MySQL os_parent_dir_fsync_win / FrankSQLite best-
- *                          effort: share R|W|D, no path resolution)
+ *   1  DIRFLUSH_CREATE     arm0 + GENERIC_WRITE dir handle flush (leveldb
+ *                          30b34e0 / SQLite winSyncDirectory / MySQL
+ *                          os_parent_dir_fsync_win / FrankSQLite best-effort:
+ *                          share R|W|D, no path resolution)
  *   2  SQLITE_WIN32DIRSYNC same arm1 shape but reached through a RELATIVE path
- *                          (SQLite S7 shape: probe cwd-relative, dir resolved
- *                          via "." when path has no separator)
+ *                          (SQLite S7 shape: cwd-relative, dir resolved via
+ *                          "." when path has no separator)
  *   3  LMDB_MDIRSYNC       LMDB mdb_mdirsync shape: open dir, flush, then
  *                          GetFinalPathNameByHandleW sanity read (documents
  *                          what handle actually got flushed)
  *   4  PG_TRANSIENT_FD     PG pgwin32_open_dir_for_sync shape: CreateFile via
  *                          O_RDWR-equivalent then _open_osfhandle, flush via
  *                          the fd (pg_fsync path), close via fd
- *   5  MYSQL_DELETE_DANCE  MySQL delete path: MoveFileW name->name.XXXX.d
- *                          + DeleteFileW (os_file_delete_if_exists_func), with
- *                          os_parent_dir_fsync_win after — namespace change is
- *                          a DELETE+RENAME pair, not a create
+ *   5  MYSQL_DELETE_DANCE  MySQL delete path on a DURABLE pre-state file:
+ *                          MoveFileW name->name.XXXX.d + DeleteFileW
+ *                          (os_file_delete_if_exists_func) with
+ *                          os_parent_dir_fsync_win after
  *   6  RENAME_WRITE_THROUGH rename + MOVEFILE_WRITE_THROUGH only (MySQL
- *                          os_file_rename_func / E14 arm4 recheck on this rig
- *                          generation)
+ *                          os_file_rename_func / E14 arm4 recheck)
  *   7  CREATE_MKDIR_FLUSH  MySQL create_directory shape: CreateDirectory then
  *                          flush the PARENT (POSIX arm L2951 parity)
+ *   8  DELETE_NOFLUSH      control pair for arm 5: durable file, DeleteFileA,
+ *                          no flush
+ *   9  MKDIR_NOFLUSH       control pair for arm 7: CreateDirectory, no flush
+ *  10  RENAME_DIRFLUSH     the E11 protocol on Windows: durable src, bare
+ *                          rename, then dir flush (leveldb CURRENT / LMDB /
+ *                          MySQL rename parity)
+ *  11  CREATE_ROOTFLUSH     create + flushfile + FlushDir(ROOT) only
+ *  12  CREATE_DIRPLUSROOT   create + flushfile + FlushDir(dir) + FlushDir(root)
+ *  13  CREATE_DIRFLUSH_X2   create + flushfile + FlushDir(dir) twice
+ *  14  RENAME_DIRPLUSROOT   durable src, bare rename, then dir+root flush
+ *  15  DELETE_DIRPLUSROOT   durable pre-state (double flush), delete, then
+ *                          dir+root flush
  *  98 PARK                 config-fallback signature: nothing runs
  *
  * Verdict per arm/rep (after crash-image autopsy):
@@ -258,12 +269,20 @@ static int RunArm(int arm, int rep, const char* dir, char* note) {
       return (int)((oe ? oe : fe) ? (oe ? oe : fe) : 104);
     }
     return 0;
-  case 5: {  /* MySQL delete dance: MoveFileW to .XXXX.d + DeleteFileW, then
-              * os_parent_dir_fsync_win (POSIX parity: flush AFTER unlink) */
+  case 5: {  /* MySQL delete dance on a DURABLE pre-state: WritePadded +
+              * FlushDir puts a5_rN.bin on the platter first, then the
+              * MoveFileW name->name.XXXX.d + DeleteFileW dance, then
+              * os_parent_dir_fsync_win (flush AFTER unlink, POSIX parity).
+              * Verdict: file GONE from platter = deletion persisted. */
     snprintf(path, sizeof path, "%s\\a5_r%d.bin", dir, rep);
     snprintf(deldir, sizeof deldir, "%s\\a5_r%d.bin.XXXX.d", dir, rep);
     snprintf(body, sizeof body, "e17-a5-r%d", rep);
     if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    if (!FlushDirShape(dir, &oe, &fe)) {
+      snprintf(note, 128, "pre open_err=%lu flush_err=%lu",
+               (unsigned long)oe, (unsigned long)fe);
+      return 150;
+    }
     wchar_t wsrc[96], wdst[96];
     MultiByteToWideChar(CP_UTF8, 0, path, -1, wsrc, 96);
     MultiByteToWideChar(CP_UTF8, 0, deldir, -1, wdst, 96);
@@ -303,6 +322,111 @@ static int RunArm(int arm, int rep, const char* dir, char* note) {
                (unsigned long)oe, (unsigned long)fe);
       return (int)((oe ? oe : fe) ? (oe ? oe : fe) : 107);
     }
+    return 0;
+  }
+  case 8: {  /* delete WITHOUT flush — control pair for arm 5:
+              * durable pre-state, DeleteFileA, nothing else.
+              * Verdict: file STILL on platter = deletion lost. */
+    snprintf(path, sizeof path, "%s\\a8_r%d.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a8-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    if (!FlushDirShape(dir, &oe, &fe)) {
+      snprintf(note, 128, "pre open_err=%lu flush_err=%lu",
+               (unsigned long)oe, (unsigned long)fe);
+      return 151;
+    }
+    if (!DeleteFileA(path)) return (int)GetLastError();
+    return 0;
+  }
+  case 9: {  /* mkdir WITHOUT flush — control pair for arm 7.
+              * Verdict: a9_rN.d absent from platter. */
+    snprintf(deldir, sizeof deldir, "%s\\a9_r%d.d", dir, rep);
+    wchar_t wdir[96];
+    MultiByteToWideChar(CP_UTF8, 0, deldir, -1, wdir, 96);
+    RemoveDirectoryW(wdir);
+    if (!CreateDirectoryW(wdir, nullptr)) return (int)GetLastError();
+    return 0;
+  }
+  case 10: {  /* rename + parent dir flush — the E11 protocol on Windows
+               * (leveldb CURRENT rename covered by SyncDirIfManifest,
+               * LMDB/MySQL rename call sites). Durable src, bare
+               * MOVEFILE_REPLACE_EXISTING, then FlushDir.
+               * Verdict: dst PRESENT, src absent. */
+    snprintf(src, sizeof src, "%s\\a10_r%d_src.bin", dir, rep);
+    snprintf(dst, sizeof dst, "%s\\a10_r%d_dst.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a10-r%d", rep);
+    DeleteFileA(dst);
+    if (!WritePadded(src, body, TRUE)) return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe); FlushDirShape(root, &oe, &fe);
+    wchar_t wsrc[96], wdst[96];
+    MultiByteToWideChar(CP_UTF8, 0, src, -1, wsrc, 96);
+    MultiByteToWideChar(CP_UTF8, 0, dst, -1, wdst, 96);
+    if (!MoveFileExW(wsrc, wdst, MOVEFILE_REPLACE_EXISTING))
+      return (int)GetLastError();
+    if (!FlushDirShape(dir, &oe, &fe)) {
+      snprintf(note, 128, "ren flush open_err=%lu flush_err=%lu",
+               (unsigned long)oe, (unsigned long)fe);
+      return (int)((oe ? oe : fe) ? (oe ? oe : fe) : 110);
+    }
+    return 0;
+  }
+  case 11: {  /* create + flushfile + FlushDir(ROOT) only — disambiguates
+               * whether the ROOT flush alone drives metadata to device. */
+    snprintf(path, sizeof path, "%s\\a11_r%d.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a11-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    if (!FlushDirShape(root, &oe, &fe)) return 111;
+    return 0;
+  }
+  case 12: {  /* create + flushfile + FlushDir(dir) + FlushDir(root) — the
+               * double flush that showed the platter effect in arms 6/10
+               * pre-state. Expect: file PRESENT on platter. */
+    snprintf(path, sizeof path, "%s\\a12_r%d.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a12-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe);
+    if (!FlushDirShape(root, &oe, &fe)) return 112;
+    return 0;
+  }
+  case 13: {  /* create + flushfile + FlushDir(dir) twice — root excluded.
+               * Distinguishes "dir flush twice" from "dir+root". */
+    snprintf(path, sizeof path, "%s\\a13_r%d.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a13-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe);
+    if (!FlushDirShape(dir, &oe, &fe)) return 113;
+    return 0;
+  }
+  case 14: {  /* rename + FlushDir(dir) + FlushDir(root) AFTER the rename —
+               * the revised rename protocol. Durable src (double-flush
+               * pre-state), bare rename, then dir+root flush.
+               * Verdict: dst PRESENT, src absent. */
+    snprintf(src, sizeof src, "%s\\a14_r%d_src.bin", dir, rep);
+    snprintf(dst, sizeof dst, "%s\\a14_r%d_dst.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a14-r%d", rep);
+    DeleteFileA(dst);
+    if (!WritePadded(src, body, TRUE)) return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe); FlushDirShape(root, &oe, &fe);
+    wchar_t wsrc[96], wdst[96];
+    MultiByteToWideChar(CP_UTF8, 0, src, -1, wsrc, 96);
+    MultiByteToWideChar(CP_UTF8, 0, dst, -1, wdst, 96);
+    if (!MoveFileExW(wsrc, wdst, MOVEFILE_REPLACE_EXISTING))
+      return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe);
+    if (!FlushDirShape(root, &oe, &fe)) return 114;
+    return 0;
+  }
+  case 15: {  /* delete + FlushDir(dir) + FlushDir(root) — durable pre-state
+               * via DOUBLE flush (the single-flush pre-state never landed),
+               * then DeleteFileA, then dir+root flush.
+               * Verdict: a15_rN.bin GONE from platter. */
+    snprintf(path, sizeof path, "%s\\a15_r%d.bin", dir, rep);
+    snprintf(body, sizeof body, "e17-a15-r%d", rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe); FlushDirShape(root, &oe, &fe);
+    if (!DeleteFileA(path)) return (int)GetLastError();
+    FlushDirShape(dir, &oe, &fe);
+    if (!FlushDirShape(root, &oe, &fe)) return 115;
     return 0;
   }
   }
