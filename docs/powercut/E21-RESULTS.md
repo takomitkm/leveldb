@@ -102,3 +102,27 @@ SQLite 每事务一次 → 4 ms 加在一次可能只有 1 ms 的提交上，是
 - 脚本：`docs/powercut/run-tier1.ps1`（v9，PowerShell 5.1/7 均可）
 - 工作流：`.github/workflows/e21-tier1.yml`（workflow_dispatch + push 触发，artifacts 收 report/log/csv）
 - 运行记录：run 44097368074（100 轮）、44096695751（25 轮）、44095811196（v7 首轮干净信号）
+
+## E23：摊到每个提交上的代价（SQLite 提交序列模拟，2026-11-18）
+
+问题：SQLite 每事务一次 flush，dir/root flush 摊到**每个提交**上各多少钱？
+`bench-sqlite-commit.ps1` 在真 Windows 内核（GH `windows-latest`，D: 卷）模拟回滚日志提交序列：
+建 journal → 写 2 KiB（非驻留）+ fsync → 建/改 db → 写 2 KiB + fsync → 删 journal → 变体专属 flush。
+每变体 200 提交 + 20 预热：
+
+| 变体 | 总耗时 | ms/commit | TPS |
+|---|---|---|---|
+| vanilla（无目录刷/卷根刷） | 286.7 ms | **1.434** | 697.6 |
+| dir（+父目录刷，E17 补丁形状） | 283.5 ms | **1.418** | 705.4 |
+| root（+父目录刷+卷根刷，E21 修法） | 581.5 ms | **2.907** | 344.0 |
+
+- **dir flush 免费**：−0.016 ms/commit，噪声内。与 E21 的"目录刷只发 IRP、没有元数据要写"自洽——
+  它便宜正因为它不做真活。
+- **root flush +1.473 ms/commit**（≈2×，TPS 698→344）：这就是"目录项真的落盘"在
+  Azure NVMe 上的单价。与 E21 单次测量（p50 3.8–4.3 ms，别的卷）同量级。
+- **分摊结论不变**：leveldb 每 1–4 MB 一次 → ~1 ms/MB，可承受；SQLite 每事务一次 →
+  提交成本翻倍，是否值得由 B1/B2 拍板（B2 = 只改文档措辞，零成本）。
+- 注意：runner 是 Azure 虚拟机存储，绝对值不等于物理盘；**delta 是信号**。模拟不含
+  SQLite 解析/B-tree/锁开销——绝对 TPS 无意义，只有三个变体的差值可读。
+- 运行记录：fork run 44187813156（2026-11-17）。
+

@@ -612,6 +612,19 @@ not durable — but the mechanism is now precise: the flush is real, the metadat
 is missing. Measurements and the consistency table:
 [docs/powercut/E21-RESULTS.md](docs/powercut/E21-RESULTS.md).
 
+**Cost of the fix (added 2026-11-18): E21 measured the single call, E23 amortized
+it.** A single volume-root flush costs p50 3.8–4.3 ms (14–16× the file flush);
+the parent-directory flush is cheaper than the file flush (0.16–0.21 ms) because
+it carries no metadata to write. Amortized over a real commit sequence
+(`bench-sqlite-commit.ps1`, 200 transactions per variant, runner volume D:): the
+parent-dir flush is **free** (−0.016 ms/commit, noise), the volume-root flush adds
+**+1.47 ms/commit** (≈2×, TPS 698→344). For leveldb — one `SyncDirIfManifest()`
+per 1–4 MB `LogAndApply` — that is ~1 ms/MB, acceptable. For SQLite, which pays
+once per transaction, it doubles the commit cost — that is the B1/B2 decision.
+Only the deltas are the signal; the runner is Azure storage and the simulator
+omits SQLite parsing/B-tree/locking. E23 results: the E23 section of
+[docs/powercut/E21-RESULTS.md](docs/powercut/E21-RESULTS.md).
+
 The complete rigs are archived in this repository under
 [docs/powercut/](docs/powercut/README.md) — the Linux QEMU power-cut model
 (E11; the "5/5 vs 8/8" figures, which are Linux evidence, not Windows), the
@@ -635,7 +648,9 @@ name; arm 15: a durable delete followed by parent+root flush persists the
 deletion). The likely mechanism is that ntfs.sys treats a root-directory
 handle flush as a volume-level flush, while a subdirectory handle flush
 covers only that directory's own streams. All E17 findings are WinPE/TCG/IDE
-specific; real hardware is untested, and a root flush's cost is unmeasured.
+specific; real hardware is untested. (Root-flush cost was later measured:
+E21 single call 3.8–4.3 ms p50, E23 amortized +1.47 ms per SQLite-shaped
+commit — see the cost paragraph above.)
 
 ### G. Why nobody did it: the stated reasons, verbatim (2026-11-15)
 
