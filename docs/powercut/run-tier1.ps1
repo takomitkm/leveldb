@@ -38,7 +38,8 @@ param(
   [switch]$KeepEtl,
   [switch]$NoElevate,
   [switch]$NoPause,
-  [switch]$Elevated
+  [switch]$Elevated,
+  [switch]$Diagnose
 )
 
 $ErrorActionPreference = 'Stop'
@@ -186,6 +187,60 @@ public static class E21Native {
     if ($script:ProviderAvail[$n]) { $available += $n }
   }
 
+  # ------------------------------------------------------------ diagnose mode
+  if ($Diagnose) {
+    Write-Host ""
+    Write-Host "=== DIAGNOSE: logman / wpr capability battery ===" -ForegroundColor Cyan
+    $d = $script:Root
+    $p1 = 'Microsoft-Windows-Kernel-File'
+    $battery = @(
+      @{ Label = '1 create -ets (no provider)';      Args = @('create','trace','e21d1','-o',"$d\d1.etl",'-ets') },
+      @{ Label = '2 create -ets -p plain';           Args = @('create','trace','e21d2','-o',"$d\d2.etl",'-ets','-p',$p1) },
+      @{ Label = '3 create -ets -p flags level';     Args = @('create','trace','e21d3','-o',"$d\d3.etl",'-ets','-p',$p1,'0xFFFFFFFF','5') },
+      @{ Label = '4 create (stored) -p plain';       Args = @('create','trace','e21d4','-o',"$d\d4.etl",'-p',$p1) },
+      @{ Label = '5 create (stored) -p flags level'; Args = @('create','trace','e21d5','-o',"$d\d5.etl",'-p',$p1,'0xFFFFFFFF','5') },
+      @{ Label = '6 create -ets -f bin -p plain';    Args = @('create','trace','e21d6','-o',"$d\d6.etl",'-f','bin','-ets','-p',$p1) }
+    )
+    foreach ($b in $battery) {
+      $out = & logman @($b.Args) 2>&1
+      $rc  = $LASTEXITCODE
+      $txt = (($out | ForEach-Object { "$_" }) -join ' | ')
+      if ($txt.Length -gt 300) { $txt = $txt.Substring(0, 300) }
+      Write-Host ("  [{0}] rc={1}  {2}" -f $b.Label, $rc, $txt) -ForegroundColor Gray
+      Write-Host ("       cmd: logman " + ($b.Args -join ' ')) -ForegroundColor DarkGray
+      if ($rc -eq 0) {
+        # try to start it if it is a stored collector (forms 4/5)
+        if ($b.Label -match 'stored') {
+          $out2 = & logman start ($b.Args[2]) 2>&1
+          Write-Host ("       start rc={0} {1}" -f $LASTEXITCODE, (($out2 | ForEach-Object { "$_" }) -join ' | ')) -ForegroundColor DarkGray
+          & logman stop ($b.Args[2]) 2>&1 | Out-Null
+        } else {
+          & logman stop ($b.Args[2]) -ets 2>&1 | Out-Null
+        }
+        & logman delete ($b.Args[2]) 2>&1 | Out-Null
+        Write-Host ("       etl exists: {0}" -f (Test-Path $b.Args[4])) -ForegroundColor DarkGray
+        Remove-Item $b.Args[4] -Force -ErrorAction SilentlyContinue
+      } else {
+        & logman delete ($b.Args[2]) 2>&1 | Out-Null
+      }
+    }
+
+    $wpr = Join-Path $env:SystemRoot 'System32\wpr.exe'
+    Write-Host ("  wpr present: {0} ({1})" -f (Test-Path $wpr), $wpr) -ForegroundColor Gray
+    if (Test-Path $wpr) {
+      & $wpr -cancel 2>&1 | Out-Null
+      $out = & $wpr -start DiskIO -filemode 2>&1
+      Write-Host ("  wpr start rc={0} {1}" -f $LASTEXITCODE, (($out | ForEach-Object { "$_" }) -join ' | ')) -ForegroundColor Gray
+      Start-Sleep -Milliseconds 400
+      $out = & $wpr -stop "$d\dw.etl" 2>&1
+      Write-Host ("  wpr stop  rc={0} etl={1} {2}" -f $LASTEXITCODE, (Test-Path "$d\dw.etl"), (($out | ForEach-Object { "$_" }) -join ' | ')) -ForegroundColor Gray
+      Remove-Item "$d\dw.etl" -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ""
+    Write-Host ("Diagnose log: {0}" -f $script:LogPath) -ForegroundColor Cyan
+    return
+  }
+
   $wprPath = Join-Path $env:SystemRoot 'System32\wpr.exe'
 
   # 2) self-test logman - two argument forms, verbose first
@@ -213,7 +268,7 @@ public static class E21Native {
         Write-Host ("  tracer: logman OK ({0}; form={1})" -f $script:ProvidersUsed, $form.Label) -ForegroundColor Green
         break
       } else {
-        $msg = ("logman[{0}] rc={1} (0x{2:X8}) : {3}" -f $form.Label, $rc, [uint32]($rc -band 0xFFFFFFFF), (($out | ForEach-Object { "$_" }) -join ' | '))
+        $msg = ("logman[{0}] rc={1} {2} : {3}" -f $form.Label, $rc, ('0x{0:X8}' -f ([int64]$rc -band [int64]0xFFFFFFFF)), (($out | ForEach-Object { "$_" }) -join ' | '))
         $script:ToolErrors.Add($msg) | Out-Null
         Write-Host ("  tracer: logman[{0}] FAILED - {1}" -f $form.Label, $msg) -ForegroundColor DarkYellow
       }
