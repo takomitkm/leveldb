@@ -625,6 +625,20 @@ Only the deltas are the signal; the runner is Azure storage and the simulator
 omits SQLite parsing/B-tree/locking. E23 results: the E23 section of
 [docs/powercut/E21-RESULTS.md](docs/powercut/E21-RESULTS.md).
 
+**Real-build confirmation (added 2026-11-18, E24/E25).** E24 builds real
+SQLite three ways (vanilla / dir-sync / dir+root-sync) and runs real
+transactions: the dir flush stays free (+0.06 ms/txn), the dir+root shape
+costs **+5.4 ms/txn in DELETE+synchronous=FULL (≈5.2×, TPS 795→150)**,
+doubles exactly under synchronous=EXTRA, costs nothing in WAL mode, and
++35–50% on a mixed speedtest1 workload — so the honest per-flush price
+brackets at 1.5–5.4 ms depending on how much metadata each flush has to
+push. E25 builds real LMDB three ways: its dir-flush patch fires only at
+env_open/env_copy, so dir+root adds ≈2.5–3 ms **per freshly created
+environment** and the commit path is measurably untouched (phase B equal
+across all three variants). All rigs green (SQLite probe red/green with an
+exact hook counter; LMDB probe emits `DIRSYNC-PROBE-ROOT root_err=0` as a
+non-admin on the runner). Report: [docs/powercut/E24-RESULTS.md](docs/powercut/E24-RESULTS.md).
+
 The complete rigs are archived in this repository under
 [docs/powercut/](docs/powercut/README.md) — the Linux QEMU power-cut model
 (E11; the "5/5 vs 8/8" figures, which are Linux evidence, not Windows), the
