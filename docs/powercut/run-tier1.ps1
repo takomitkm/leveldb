@@ -362,10 +362,10 @@ public static class E21Native {
 
   function Measure-FlushEvents {
     param([string]$Csv, [int]$DiskNumber = -1)
-    $fbAll = 0; $fbDisk = 0; $fiDisk = 0
+    $fbAll = 0; $fbDisk = 0; $fiDisk = 0; $wrAll = 0; $rdAll = 0
     $samples = New-Object System.Collections.Generic.List[string]
     if (-not $Csv) {
-      return [pscustomobject]@{ FbAll = 0; FbDisk = 0; FiDisk = 0; Samples = @(); Header = '' }
+      return [pscustomobject]@{ FbAll = 0; FbDisk = 0; FiDisk = 0; WrAll = 0; RdAll = 0; Samples = @(); Header = '' }
     }
     $diskIdx = -1
     $first   = $true
@@ -380,6 +380,8 @@ public static class E21Native {
         }
         continue
       }
+      if ($line -match '(?i)^[^,]*,\s*Write\s*,') { $wrAll++ }
+      if ($line -match '(?i)^[^,]*,\s*Read\s*,')  { $rdAll++ }
       if ($line -notmatch '(?i)FlushBuffers|FlushInit') { continue }
       $isFb = $line -match '(?i)FlushBuffers'
       $isFi = $line -match '(?i)FlushInit'
@@ -400,7 +402,7 @@ public static class E21Native {
         $samples.Add($line.Substring(0, [Math]::Min(180, $line.Length))) | Out-Null
       }
     }
-    return [pscustomobject]@{ FbAll = $fbAll; FbDisk = $fbDisk; FiDisk = $fiDisk; Samples = $samples.ToArray(); Header = $headerLine }
+    return [pscustomobject]@{ FbAll = $fbAll; FbDisk = $fbDisk; FiDisk = $fiDisk; WrAll = $wrAll; RdAll = $rdAll; Samples = $samples.ToArray(); Header = $headerLine }
   }
 
   # ------------------------------------------------------------------- arms
@@ -467,6 +469,8 @@ public static class E21Native {
       FlushEvents = $ev.FbDisk
       SrbFlush    = $ev.FiDisk
       FbAll       = $ev.FbAll
+      WrAll       = $ev.WrAll
+      RdAll       = $ev.RdAll
       FileMs      = $(if ($avgMs.ContainsKey('file')) { $avgMs['file'] } else { '' })
       DirMs       = $(if ($avgMs.ContainsKey('dir'))  { $avgMs['dir'] }  else { '' })
       RootMs      = $(if ($avgMs.ContainsKey('root')) { $avgMs['root'] } else { '' })
@@ -475,8 +479,8 @@ public static class E21Native {
     }
     $results.Add($row) | Out-Null
 
-    Write-Host ("     ourDisk FlushBuffers={0} FlushInit={1} | allDisks Fb={2} | file={3}ms dir={4}ms root={5}ms | errors={6}" -f `
-        $row.FlushEvents, $row.SrbFlush, $row.FbAll, $row.FileMs, $row.DirMs, $row.RootMs, $row.Errors) -ForegroundColor Gray
+    Write-Host ("     allDisks: FlushBuffers={0} FlushInit={1} Write={2} Read={3} | file={4}ms dir={5}ms root={6}ms | errors={7}" -f `
+        $row.FbAll, $row.SrbFlush, $row.WrAll, $row.RdAll, $row.FileMs, $row.DirMs, $row.RootMs, $row.Errors) -ForegroundColor Gray
     foreach ($s2 in $ev.Samples) { Write-Host ("     sample: " + $s2) -ForegroundColor DarkGray }
     if ($ev.Header) { Write-Host ("     csv-header: " + $ev.Header) -ForegroundColor DarkGray }
   }
@@ -488,14 +492,17 @@ public static class E21Native {
   $bSrb = $(if ($byId.ContainsKey('B')) { $byId['B'].SrbFlush }    else { 0 })
   $cSrb = $(if ($byId.ContainsKey('C')) { $byId['C'].SrbFlush }    else { 0 })
   $dSrb = $(if ($byId.ContainsKey('D')) { $byId['D'].SrbFlush }    else { 0 })
-  $bEv  = $(if ($byId.ContainsKey('B')) { $byId['B'].FlushEvents } else { 0 })
-  $cEv  = $(if ($byId.ContainsKey('C')) { $byId['C'].FlushEvents } else { 0 })
-  $dEv  = $(if ($byId.ContainsKey('D')) { $byId['D'].FlushEvents } else { 0 })
+  $bEv  = $(if ($byId.ContainsKey('B')) { $byId['B'].FbAll } else { 0 })
+  $cEv  = $(if ($byId.ContainsKey('C')) { $byId['C'].FbAll } else { 0 })
+  $dEv  = $(if ($byId.ContainsKey('D')) { $byId['D'].FbAll } else { 0 })
+  $bWr  = $(if ($byId.ContainsKey('B')) { $byId['B'].WrAll } else { 0 })
+  $cWr  = $(if ($byId.ContainsKey('C')) { $byId['C'].WrAll } else { 0 })
+  $dWr  = $(if ($byId.ContainsKey('D')) { $byId['D'].WrAll } else { 0 })
 
   # FlushBuffers events from the DiskIo provider ARE device-level: they are
   # flush IRPs that reached the disk class driver.  Counting only our own
   # physical disk keeps background flushes out.
-  $metric = 'FlushBuffers@ourDisk'
+  $metric = 'FlushBuffers@allDisks'
   $cDelta = $cEv - $bEv
   $dDelta = $dEv - $bEv
   $level  = 'DEVICE'
@@ -530,10 +537,10 @@ public static class E21Native {
   $lines.Add(("Reps    : {0}   Tracer: {1}   Providers: {2}" -f $Reps, $script:Tracer, $script:ProvidersUsed))
   $lines.Add(("Prov avail: " + (($script:ProviderAvail.Keys | ForEach-Object { "$_=" + $script:ProviderAvail[$_] }) -join ' ')))
   $lines.Add("")
-  $lines.Add("arm  operation            FbOurDisk  FiOurDisk  FbAllDisks  fileMs  dirMs  rootMs  errors")
+  $lines.Add("arm  operation            FlushBuf  FlushInit  Write  Read   fileMs  dirMs  rootMs  errors")
   foreach ($r in $results) {
-    $lines.Add(("{0}    {1}  {2,9}  {3,10}  {4,10}  {5,6}  {6,5}  {7,6}  {8,6}" -f `
-        $r.Arm, $r.Operation, $r.FlushEvents, $r.SrbFlush, $r.FbAll, $r.FileMs, $r.DirMs, $r.RootMs, $r.Errors))
+    $lines.Add(("{0}    {1}  {2,8}  {3,9}  {4,5}  {5,4}  {6,6}  {7,5}  {8,6}  {9,6}" -f `
+        $r.Arm, $r.Operation, $r.FbAll, $r.SrbFlush, $r.WrAll, $r.RdAll, $r.FileMs, $r.DirMs, $r.RootMs, $r.Errors))
   }
   $lines.Add("")
   $lines.Add(("TIMING: file flush {0} ms, dir flush {1} ms, root flush {2} ms, dir/file ratio {3}" -f $fMs, $dMs, $rMs, $ratio))
@@ -542,6 +549,7 @@ public static class E21Native {
   $lines.Add(("DELTA vs B (flush file only), metric = {0}:" -f $metric))
   $lines.Add(("  C - B (parent directory flush) = {0}" -f $cDelta))
   $lines.Add(("  D - B (volume root flush)      = {0}   <- positive control" -f $dDelta))
+  $lines.Add(("  writes: B={0} C={1} D={2}   (C-B={3}, D-B={4})" -f $bWr, $cWr, $dWr, ($cWr - $bWr), ($dWr - $bWr)))
   $lines.Add("")
   if ($level -eq 'FILE' -and $bEv -eq 0 -and $cEv -eq 0 -and $dEv -eq 0) {
     $lines.Add("VERDICT: FILE-LEVEL ONLY - no StorPort FLUSH SRB was observed, so the")
