@@ -251,11 +251,36 @@ public static class E21Native {
 
   $wprPath = Join-Path $env:SystemRoot 'System32\wpr.exe'
 
-  # 2) self-test logman
+  # 2) wpr first: its DiskIO profile emits DiskIo/FlushBuffers events
+  if (Test-Path $wprPath) {
+    $testEtl = Join-Path $script:Root ("e21-selftest-{0}.etl" -f $script:Stamp)
+    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+    $out = & $wprPath -start DiskIO -filemode 2>&1
+    $rc  = $LASTEXITCODE
+    if ($rc -eq 0) {
+      Start-Sleep -Milliseconds 400
+      & $wprPath -stop $testEtl 2>&1 | Out-Null
+      if (Test-Path $testEtl) {
+        $script:Tracer = 'wpr'
+        $script:ProvidersUsed = 'wpr DiskIO profile'
+        Write-Host "  tracer: wpr OK (DiskIO profile)" -ForegroundColor Green
+      } else {
+        $script:ToolErrors.Add('wpr produced no .etl') | Out-Null
+        Write-Host "  tracer: wpr produced no .etl" -ForegroundColor DarkYellow
+      }
+    } else {
+      $msg = ("wpr rc={0} : {1}" -f $rc, (($out | ForEach-Object { "$_" }) -join ' | '))
+      $script:ToolErrors.Add($msg) | Out-Null
+      Write-Host ("  tracer: wpr FAILED - " + $msg) -ForegroundColor DarkYellow
+    }
+    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+  }
+
+  # 3) fall back to logman (one provider per session)
   #    This logman build rejects more than one -p per session:
   #    "Argument 'p' has been defined too many times." (E_INVALIDARG)
   #    So: ONE provider per session, the decisive one (StorPort) first.
-  if ($available.Count -gt 0) {
+  if ($script:Tracer -eq 'none' -and $available.Count -gt 0) {
     $order  = @('Microsoft-Windows-StorPort','Microsoft-Windows-Kernel-Disk','Microsoft-Windows-Kernel-File')
     $picked = $false
     foreach ($prov in $order) {
@@ -290,31 +315,6 @@ public static class E21Native {
   } else {
     $script:ToolErrors.Add('no candidate ETW provider is registered on this build') | Out-Null
     Write-Host "  tracer: no candidate provider registered" -ForegroundColor DarkYellow
-  }
-
-  # 3) fall back to wpr
-  if ($script:Tracer -eq 'none' -and (Test-Path $wprPath)) {
-    $testEtl = Join-Path $script:Root ("e21-selftest-{0}.etl" -f $script:Stamp)
-    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
-    $out = & $wprPath -start DiskIO -filemode 2>&1
-    $rc  = $LASTEXITCODE
-    if ($rc -eq 0) {
-      Start-Sleep -Milliseconds 400
-      & $wprPath -stop $testEtl 2>&1 | Out-Null
-      if (Test-Path $testEtl) {
-        $script:Tracer = 'wpr'
-        $script:ProvidersUsed = 'wpr DiskIO profile'
-        Write-Host "  tracer: wpr OK (DiskIO profile)" -ForegroundColor Green
-      } else {
-        $script:ToolErrors.Add('wpr produced no .etl') | Out-Null
-        Write-Host "  tracer: wpr produced no .etl" -ForegroundColor DarkYellow
-      }
-    } else {
-      $msg = ("wpr rc={0} : {1}" -f $rc, (($out | ForEach-Object { "$_" }) -join ' | '))
-      $script:ToolErrors.Add($msg) | Out-Null
-      Write-Host ("  tracer: wpr FAILED - " + $msg) -ForegroundColor DarkYellow
-    }
-    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
   }
 
   if ($script:Tracer -eq 'none') {
@@ -365,16 +365,18 @@ public static class E21Native {
     $fbAll = 0; $fbDisk = 0; $fiDisk = 0
     $samples = New-Object System.Collections.Generic.List[string]
     if (-not $Csv) {
-      return [pscustomobject]@{ FbAll = 0; FbDisk = 0; FiDisk = 0; Samples = @() }
+      return [pscustomobject]@{ FbAll = 0; FbDisk = 0; FiDisk = 0; Samples = @(); Header = '' }
     }
     $diskIdx = -1
     $first   = $true
+    $headerLine = ''
     foreach ($line in [IO.File]::ReadLines($Csv)) {
       if ($first) {
         $first = $false
         $hdr = $line -split ','
         for ($i = 0; $i -lt $hdr.Count; $i++) {
-          if ($hdr[$i].Trim().Trim('"') -ieq 'DiskNumber') { $diskIdx = $i }
+          $headerLine = $line.Trim()
+        if ($hdr[$i].Trim().Trim('"') -ieq 'DiskNumber') { $diskIdx = $i }
         }
         continue
       }
@@ -398,7 +400,7 @@ public static class E21Native {
         $samples.Add($line.Substring(0, [Math]::Min(180, $line.Length))) | Out-Null
       }
     }
-    return [pscustomobject]@{ FbAll = $fbAll; FbDisk = $fbDisk; FiDisk = $fiDisk; Samples = $samples.ToArray() }
+    return [pscustomobject]@{ FbAll = $fbAll; FbDisk = $fbDisk; FiDisk = $fiDisk; Samples = $samples.ToArray(); Header = $headerLine }
   }
 
   # ------------------------------------------------------------------- arms
@@ -416,37 +418,40 @@ public static class E21Native {
     $csv  = Join-Path $script:Root ("e21-{0}-{1}.csv" -f $arm.Id, $script:Stamp)
     $name = "e21trace" + $arm.Id
 
-    Write-Host ("[{0}] {1} tracing={2}..." -f $arm.Id, $arm.Name, $script:Tracer) -ForegroundColor Yellow
-    try { Start-FlushTrace -Name $name -Etl $etl }
-    catch { $script:ToolErrors.Add("arm $($arm.Id) start: " + $_.Exception.Message) | Out-Null }
-
-    $timings = New-Object System.Collections.Generic.List[object]
+    # ---- setup OUTSIDE the measured window: create files, open handles ----
+    $handles = New-Object System.Collections.Generic.List[object]
     $errors  = New-Object System.Collections.Generic.List[string]
-
     for ($r = 0; $r -lt $Reps; $r++) {
       $path = Join-Path $workDir ("a21_{0}_r{1}.bin" -f $arm.Id, $r)
       try {
         $fh = New-PaddedFile -Path $path -Tag ("e21-{0}-r{1}" -f $arm.Id, $r)
-        if ($arm.UseFile) { $timings.Add((Measure-Flush -Handle $fh -Label 'file')) | Out-Null }
-        [void][E21Native]::CloseHandle($fh)
+        $handles.Add($fh) | Out-Null
+      } catch { $errors.Add($_.Exception.Message) | Out-Null }
+    }
+    $dirH = $null; $rootH = $null
+    if ($arm.UseDir)  { try { $dirH  = Open-Directory -Path $workDir } catch { $errors.Add($_.Exception.Message) | Out-Null } }
+    if ($arm.UseRoot) { try { $rootH = Open-Directory -Path $rootDir } catch { $errors.Add($_.Exception.Message) | Out-Null } }
 
-        if ($arm.UseDir) {
-          $dh = Open-Directory -Path $workDir
-          $timings.Add((Measure-Flush -Handle $dh -Label 'dir')) | Out-Null
-          [void][E21Native]::CloseHandle($dh)
-        }
-        if ($arm.UseRoot) {
-          $rh = Open-Directory -Path $rootDir
-          $timings.Add((Measure-Flush -Handle $rh -Label 'root')) | Out-Null
-          [void][E21Native]::CloseHandle($rh)
-        }
-      } catch {
-        $errors.Add($_.Exception.Message) | Out-Null
+    # ---- measured window: ONLY the flush calls ----
+    Write-Host ("[{0}] {1} tracer={2} window=flushes-only reps={3}" -f $arm.Id, $arm.Name, $script:Tracer, $Reps) -ForegroundColor Yellow
+    try { Start-FlushTrace -Name $name -Etl $etl }
+    catch { $script:ToolErrors.Add("arm $($arm.Id) start: " + $_.Exception.Message) | Out-Null }
+
+    $timings = New-Object System.Collections.Generic.List[object]
+    for ($r = 0; $r -lt $Reps; $r++) {
+      if ($arm.UseFile -and $r -lt $handles.Count) {
+        $timings.Add((Measure-Flush -Handle $handles[$r] -Label 'file')) | Out-Null
       }
+      if ($dirH)  { $timings.Add((Measure-Flush -Handle $dirH  -Label 'dir'))  | Out-Null }
+      if ($rootH) { $timings.Add((Measure-Flush -Handle $rootH -Label 'root')) | Out-Null }
     }
 
     try { Stop-FlushTrace -Name $name -Etl $etl }
     catch { $script:ToolErrors.Add("arm $($arm.Id) stop: " + $_.Exception.Message) | Out-Null }
+
+    foreach ($h in $handles) { [void][E21Native]::CloseHandle($h) }
+    if ($dirH)  { [void][E21Native]::CloseHandle($dirH) }
+    if ($rootH) { [void][E21Native]::CloseHandle($rootH) }
 
     $csvOut = Convert-Trace -Etl $etl -Csv $csv
     $ev     = Measure-FlushEvents -Csv $csvOut -DiskNumber $diskNumber
@@ -470,9 +475,10 @@ public static class E21Native {
     }
     $results.Add($row) | Out-Null
 
-    Write-Host ("     ourDisk: FlushBuffers={0} FlushInit={1} (all disks: {2})  file={3}ms dir={4}ms root={5}ms  errors={6}" -f `
+    Write-Host ("     ourDisk FlushBuffers={0} FlushInit={1} | allDisks Fb={2} | file={3}ms dir={4}ms root={5}ms | errors={6}" -f `
         $row.FlushEvents, $row.SrbFlush, $row.FbAll, $row.FileMs, $row.DirMs, $row.RootMs, $row.Errors) -ForegroundColor Gray
-    foreach ($s in $ev.Samples) { Write-Host ("     sample: " + $s) -ForegroundColor DarkGray }
+    foreach ($s2 in $ev.Samples) { Write-Host ("     sample: " + $s2) -ForegroundColor DarkGray }
+    if ($ev.Header) { Write-Host ("     csv-header: " + $ev.Header) -ForegroundColor DarkGray }
   }
 
   # ------------------------------------------------------------------ report
