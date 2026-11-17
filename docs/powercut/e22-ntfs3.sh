@@ -62,8 +62,13 @@ run_arm() {  # $1 = arm (0 fsync-file, 1 +fsync-dir, 2 teeth)
   rm -f a$A-data.img a$A-log.img a$A-replay-*.img
   truncate -s 1G a$A-data.img
   truncate -s 512M a$A-log.img
-  LD=$(sudo losetup -f --show a$A-data.img)
-  LL=$(sudo losetup -f --show a$A-log.img)
+  # ubuntu runners have every loop device occupied by snap squashfs mounts
+  sudo losetup -D 2>/dev/null || true
+  for X in 0 1 2 3 4 5 6 7; do
+    [ -e /dev/loop$X ] || sudo mknod /dev/loop$X b 7 $X 2>/dev/null || true
+  done
+  LD=$(sudo losetup -f --show a$A-data.img) || { echo LOSETUP-DATA-FAIL; return 1; }
+  LL=$(sudo losetup -f --show a$A-log.img) || { echo LOSETUP-LOG-FAIL; sudo losetup -d "$LD" 2>/dev/null; return 1; }
   SZ=$(sudo blockdev --getsz "$LD")
   sudo dmsetup remove e22dev 2>/dev/null
   # dm-log-writes constructor is <log_device> <data_device> - log FIRST
