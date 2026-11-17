@@ -591,6 +591,23 @@ only observed operation that puts the namespace change on the device (the
 `go.txt`/source-file entries appear on the platter only in the arms that call it).
 Real-hardware power loss and `ntfs.sys` replay behavior remain untested.
 
+**Status update (added 2026-11-17, later): E21 measures the same call at the device
+layer on a real Windows kernel.** A GitHub Actions `windows-latest` runner (real
+`ntfs.sys`, virtual disk) ran four cumulative arms — no flush, `+FlushFileBuffers(file)`,
+`+FlushFileBuffers(parent dir)`, `+FlushFileBuffers(volume root)` — with the measurement
+window containing **only the flush calls**, 100 repetitions each, counting
+`DiskIo/FlushBuffers` and `Write` events. The parent-directory flush issues **exactly one
+disk flush IRP per call, the same +1.00/call as the volume-root flush**, so the call is
+*not* a no-op at the storage stack and MS-FSA §2.1.5.7 <80> is right that a directory
+flush exists. What it flushes, however, is an empty set: the write count does not move
+(**≈0.1 writes/call, against ≈1.3–3.1 for the root flush**, four runs). NTFS does not
+write the new file's MFT record or directory index in response to a directory-handle
+flush, so there is nothing for that flush to make durable. The conclusion for
+`SyncDirIfManifest()` is unchanged — without a volume-root flush the namespace change is
+not durable — but the mechanism is now precise: the flush is real, the metadata writeback
+is missing. Measurements and the consistency table:
+[docs/powercut/E21-RESULTS.md](docs/powercut/E21-RESULTS.md).
+
 The complete rigs are archived in this repository under
 [docs/powercut/](docs/powercut/README.md) — the Linux QEMU power-cut model
 (E11; the "5/5 vs 8/8" figures, which are Linux evidence, not Windows), the
