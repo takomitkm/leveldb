@@ -49,7 +49,9 @@ fi
 echo
 echo "=== E22: packages ==="
 sudo apt-get install -y -qq ntfs-3g >/dev/null 2>&1 || sudo apt-get install -y ntfs-3g 2>&1 | tail -1
-which mkfs.ntfs gcc python3
+sudo apt-get install -y -qq dmsetup 2>&1 | tail -1
+sudo dmsetup targets 2>&1 | head -4
+which mkfs.ntfs gcc python3 dmsetup
 
 echo
 echo "=== E22: probe build ==="
@@ -72,7 +74,10 @@ run_arm() {  # $1 = arm (0 fsync-file, 1 +fsync-dir, 2 teeth)
   SZ=$(sudo blockdev --getsz "$LD")
   sudo dmsetup remove e22dev 2>/dev/null
   # dm-log-writes constructor is <log_device> <data_device> - log FIRST
-  sudo dmsetup create e22dev --table "0 $SZ log-writes $LL $LD" || { echo DM-CREATE-FAIL; return 1; }
+  OUT=$(sudo dmsetup create e22dev --table "0 $SZ log-writes $LL $LD" 2>&1)
+  RC=$?
+  echo "dmsetup create rc=$RC SZ=$SZ LL=$LL LD=$LD out=[$OUT]"
+  if [ $RC -ne 0 ]; then echo DM-CREATE-FAIL; return 1; fi
   echo "dm table: $(sudo dmsetup table e22dev | head -1)" 
   sudo mkfs.ntfs -F -q -L E22 /dev/mapper/e22dev || { echo MKFS-FAIL; return 1; }
   sudo mkdir -p /mnt/e22a
