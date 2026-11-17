@@ -38,6 +38,33 @@ if ! grep -q ntfs3 /proc/filesystems || ! ls /sys/module/dm_log_writes >/dev/nul
 fi
 
 NTFS3_OK=no;  grep -q ntfs3 /proc/filesystems && NTFS3_OK=yes
+
+# --- minimal dm-log-writes repro: is the target usable on this kernel? ---
+echo "=== dm-log-writes minimal repro ==="
+truncate -s 64M mini-log.img && truncate -s 64M mini-data.img
+ML=$(sudo losetup -f --show mini-log.img)
+MD=$(sudo losetup -f --show mini-data.img)
+MSZ=$(sudo blockdev --getsz "$MD")
+MINI_OK=no
+for ARGS in "log-writes $ML $MD" "log-writes $MD $ML"; do
+  sudo dmsetup remove e22mini 2>/dev/null
+  OUT=$(sudo dmsetup create e22mini --table "0 $MSZ $ARGS" 2>&1)
+  RC=$?
+  echo "  dmsetup create [$ARGS] rc=$RC out=[$OUT]"
+  if [ $RC -eq 0 ]; then
+    MINI_OK=yes
+    echo "  MINIMAL-REPRO-OK with [$ARGS]"
+    sudo dmsetup remove e22mini
+    break
+  fi
+done
+sudo losetup -d "$ML" "$MD" 2>/dev/null
+rm -f mini-log.img mini-data.img
+echo "MINI-OK=$MINI_OK"
+if [ "$MINI_OK" != yes ]; then
+  echo "CAPABILITY-FAIL: dm-log-writes target exists but dmsetup rejects the table on this kernel."
+  exit 0
+fi
 DMLOG_OK=no;  ls /sys/module/dm_log_writes >/dev/null 2>&1 && DMLOG_OK=yes
 echo "CAPABILITY: ntfs3=$NTFS3_OK dm-log-writes=$DMLOG_OK"
 if [ "$NTFS3_OK" != yes ] || [ "$DMLOG_OK" != yes ]; then
