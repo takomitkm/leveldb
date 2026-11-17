@@ -1,0 +1,46 @@
+name: e22-ntfs3-dirsync
+
+# E22: the Linux kernel ntfs3 driver (Paragon, in-kernel, replays $LogFile)
+# on NTFS - same three arms as E19 (fsync file / +fsync dir / teeth), with
+# the power cut modelled deterministically by dm-log-writes + offline
+# replay.  Autopsy mounts each crash image both raw (ntfs-3g ro,norecover)
+# and with the kernel driver (ntfs3 ro, journal replay), so one run answers
+# both the fsync contract on ntfs3 AND whether journal recovery resurrects
+# the file.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e22-ntfs3.yml'
+      - 'docs/powercut/e22-ntfs3.sh'
+      - 'docs/powercut/e22_replay.py'
+      - 'docs/powercut/e19lin.c'
+
+jobs:
+  ntfs3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run E22 (capability probe + experiment)
+        shell: bash
+        run: sudo bash docs/powercut/e22-ntfs3.sh
+
+      - name: Collect verdicts
+        if: always()
+        shell: bash
+        run: |
+          cat /mnt/e22/e22-main.log 2>/dev/null | tail -60 || true
+          cat /mnt/e22/a*-verdict.txt 2>/dev/null || echo "(no verdicts)"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e22-ntfs3-${{ github.run_id }}
+          path: |
+            /mnt/e22/e22-main.log
+            /mnt/e22/a*-verdict.txt
+          if-no-files-found: warn
