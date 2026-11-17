@@ -90,7 +90,7 @@ run_arm() {  # $1 = arm (0 fsync-file, 1 +fsync-dir, 2 teeth)
   echo "================ ARM $A ================"
   rm -f a$A-data.img a$A-log.img a$A-replay-*.img
   truncate -s 64M a$A-data.img
-  truncate -s 64M a$A-log.img
+  truncate -s 1G a$A-log.img
   # ubuntu runners have every loop device occupied by snap squashfs mounts
   sudo losetup -D 2>/dev/null || true
   for X in 0 1 2 3 4 5 6 7; do
@@ -110,6 +110,9 @@ run_arm() {  # $1 = arm (0 fsync-file, 1 +fsync-dir, 2 teeth)
   sudo mkdir -p /mnt/e22a
   sudo mount -t ntfs3 /dev/mapper/e22dev /mnt/e22a || { echo MOUNT-NTFS3-FAIL; sudo dmsetup remove e22dev; return 1; }
   sudo "$S/probe" /mnt/e22a "$A" 0; echo "probe rc=$?"
+  # the mark forces every buffered log entry (plus the superblock) to the
+  # log device - this instant IS the power-cut point (xfstests protocol)
+  sudo dmsetup message e22dev mark e22-cut-$A || echo MARK-FAIL
   sudo sync
   sudo umount /mnt/e22a
   sudo dmsetup remove e22dev
