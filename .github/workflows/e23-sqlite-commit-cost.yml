@@ -1,0 +1,47 @@
+name: e23-sqlite-commit-cost
+
+# E23: measure the per-commit cost of the dir flush and the root flush on
+# a real Windows kernel.  Simulates the SQLite rollback-journal commit
+# sequence (journal write+fsync, db write+fsync, journal delete, then the
+# variant-specific flushes) without needing to build SQLite.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e23-sqlite-commit-cost.yml'
+      - 'docs/powercut/bench-sqlite-commit.ps1'
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          Write-Host ("OS   : {0} build {1}" -f (Get-CimInstance Win32_OperatingSystem).Caption, [Environment]::OSVersion.Version.Build)
+          Get-CimInstance Win32_LogicalDisk |
+            Select-Object DeviceID, FileSystem,
+              @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} |
+            Format-Table | Out-String | Write-Host
+
+      - name: Run SQLite commit cost benchmark
+        shell: pwsh
+        run: |
+          & ./docs/powercut/bench-sqlite-commit.ps1 -Volume D: -Transactions 200
+          $code = $LASTEXITCODE
+          Write-Host "bench exit: $code"
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e23-results-${{ github.run_id }}
+          path: |
+            docs/powercut/tier1-report-*.txt
+            D:\e23bench\bench_*.log
+          if-no-files-found: warn
