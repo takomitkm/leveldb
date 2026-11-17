@@ -377,6 +377,19 @@ class WindowsMmapReadableFile : public RandomAccessFile {
   const std::string filename_;
 };
 
+// Returns true only when the process explicitly opts into the documented
+// degrade mode for the manifest directory sync by setting
+// LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC=1. The value is read from the process
+// environment on every call (not cached), so embedding processes and tests can
+// toggle it without rebuilding or restarting. Only the exact value "1" enables
+// the mode; anything else (including unset) keeps the fail-closed default.
+bool ManifestDirSyncDegradeEnabled() {
+  wchar_t value[2];
+  const DWORD length =
+      ::GetEnvironmentVariableW(L"LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC", value, 2);
+  return length == 1 && value[0] == L'1';
+}
+
 class WindowsWritableFile : public WritableFile {
  public:
   WindowsWritableFile(std::string filename, ScopedHandle handle)
@@ -457,6 +470,16 @@ class WindowsWritableFile : public WritableFile {
   // directory handle fails with ERROR_ACCESS_DENIED) and
   // FILE_FLAG_BACKUP_SEMANTICS (required to open a directory at all); no
   // administrator privilege is involved. Verified empirically on NTFS.
+  //
+  // Failure policy (checklist item BC-19): a directory whose ACL denies the
+  // access this open requires (some restricted directories still allow every
+  // child-file operation a database performs) fails the sync and, with it, the
+  // whole Sync(). A process may opt into a documented degrade mode with
+  // LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC=1: when the directory open fails with
+  // ERROR_ACCESS_DENIED only, the directory-entry flush is skipped and the
+  // manifest data flush below still runs. The degrade reduces durability
+  // (the directory entry is no longer guaranteed to persist) and applies to
+  // nothing else; every other error code still fails closed.
   Status SyncDirIfManifest() {
     Status status;
     if (!is_manifest_) {
@@ -468,7 +491,11 @@ class WindowsWritableFile : public WritableFile {
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
     if (!dir.is_valid()) {
-      return WindowsError(dirname_, ::GetLastError());
+      const DWORD error = ::GetLastError();
+      if (error == ERROR_ACCESS_DENIED && ManifestDirSyncDegradeEnabled()) {
+        return status;
+      }
+      return WindowsError(dirname_, error);
     }
     if (!::FlushFileBuffers(dir.get())) {
       return WindowsError(dirname_, ::GetLastError());

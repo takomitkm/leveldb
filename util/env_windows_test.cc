@@ -8,6 +8,7 @@
 #define NOMINMAX
 #endif  // ifndef NOMINMAX
 #include <windows.h>
+#include <sddl.h>
 
 #include <cstring>
 #include <memory>
@@ -15,10 +16,15 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "leveldb/db.h"
 #include "leveldb/env.h"
 #include "port/port.h"
 #include "util/env_windows_test_helper.h"
 #include "util/testutil.h"
+
+#if defined(_MSC_VER)
+#pragma comment(lib, "advapi32.lib")
+#endif
 
 namespace leveldb {
 
@@ -433,6 +439,156 @@ TEST_F(EnvWindowsTest, HugeReadRequestServedInChunks) {
     delete files[i];
   }
   ASSERT_LEVELDB_OK(env_->RemoveFile(test_file));
+}
+
+// Sets a process environment variable for the current scope and removes it on
+// destruction. Win32-level on purpose: env_windows.cc reads its flags with
+// GetEnvironmentVariableW (the process environment block), so setting the
+// variable through the CRT (_wputenv) would not be visible to the library.
+class ScopedEnvironmentVariable {
+ public:
+  ScopedEnvironmentVariable(const wchar_t* name, const wchar_t* value)
+      : name_(name) {
+    ::SetEnvironmentVariableW(name_, value);
+  }
+  ~ScopedEnvironmentVariable() { ::SetEnvironmentVariableW(name_, nullptr); }
+  ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+  ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) =
+      delete;
+
+ private:
+  const wchar_t* name_;
+};
+
+// Replaces a directory's DACL with a protected grant for Everyone that omits
+// FILE_WRITE_ATTRIBUTES (0x100): opening the directory with GENERIC_WRITE then
+// fails with ERROR_ACCESS_DENIED, while child-file creation still works
+// because the granted rights include FILE_ADD_FILE. This is the exact recipe
+// the 2026-11-06 compatibility audit verified on NTFS with the Win32 probe.
+// The original DACL is restored on destruction.
+class RestrictedDirectoryDacl {
+ public:
+  explicit RestrictedDirectoryDacl(const std::wstring& path) : path_(path) {
+    DWORD needed = 0;
+    ::GetFileSecurityW(path_.c_str(), DACL_SECURITY_INFORMATION, nullptr, 0,
+                       &needed);
+    original_.resize(needed);
+    have_original_ =
+        ::GetFileSecurityW(path_.c_str(), DACL_SECURITY_INFORMATION,
+                           original_.data(), needed, &needed);
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;0x001F00FF;;;WD)", SDDL_REVISION_1, &descriptor,
+            nullptr)) {
+      installed_ =
+          ::SetFileSecurityW(path_.c_str(),
+                             DACL_SECURITY_INFORMATION |
+                                 PROTECTED_DACL_SECURITY_INFORMATION,
+                             descriptor);
+      ::LocalFree(descriptor);
+    }
+  }
+  ~RestrictedDirectoryDacl() {
+    if (installed_ && have_original_) {
+      ::SetFileSecurityW(path_.c_str(), DACL_SECURITY_INFORMATION,
+                         reinterpret_cast<PSECURITY_DESCRIPTOR>(
+                             original_.data()));
+    }
+  }
+  RestrictedDirectoryDacl(const RestrictedDirectoryDacl&) = delete;
+  RestrictedDirectoryDacl& operator=(const RestrictedDirectoryDacl&) = delete;
+
+  bool ok() const { return installed_; }
+
+ private:
+  std::wstring path_;
+  std::string original_;
+  bool have_original_ = false;
+  bool installed_ = false;
+};
+
+// Checklist item BC-19. In a directory whose DACL denies the attributes-write
+// right, opening the directory for the manifest's FlushFileBuffers() fails
+// with ERROR_ACCESS_DENIED while every child-file operation a database
+// performs keeps working. The default policy fails closed: opening a database
+// in such a directory reports the access error. Setting
+// LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC=1 for the process opts into the documented
+// degrade mode: only the directory-entry flush is skipped (the manifest data
+// flush still runs) and the open proceeds.
+TEST_F(EnvWindowsTest, ManifestSyncRestrictedDirectory) {
+  std::string base;
+  ASSERT_LEVELDB_OK(env_->GetTestDirectory(&base));
+  const std::string db_dir = base + "/restricted_dir_sync_db";
+  ::RemoveDirectoryW(Utf8ToWidePath(db_dir).c_str());  // stale earlier runs
+  ASSERT_LEVELDB_OK(env_->CreateDir(db_dir));
+  const std::wstring wide_db_dir = Utf8ToWidePath(db_dir);
+
+  RestrictedDirectoryDacl restricted(wide_db_dir);
+  ASSERT_TRUE(restricted.ok());
+
+  // Precondition: the directory itself cannot be opened for write, but child
+  // files can still be created and deleted.
+  {
+    HANDLE dir = ::CreateFileW(
+        wide_db_dir.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    ASSERT_TRUE(dir == INVALID_HANDLE_VALUE) << "directory open must fail";
+    ASSERT_EQ(DWORD(ERROR_ACCESS_DENIED), ::GetLastError());
+    const std::wstring probe = wide_db_dir + L"\\probe.tmp";
+    HANDLE child = ::CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr,
+                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_TRUE(child != INVALID_HANDLE_VALUE) << "child create must work";
+    ::CloseHandle(child);
+    ASSERT_TRUE(::DeleteFileW(probe.c_str()));
+  }
+
+  // Default policy: the manifest sync's access-denied error propagates and
+  // the open fails closed.
+  {
+    Options options;
+    options.create_if_missing = true;
+    DB* db = nullptr;
+    Status status = DB::Open(options, db_dir, &db);
+    ASSERT_FALSE(status.ok());
+    EXPECT_TRUE(status.IsIOError());
+  }
+
+  // Explicit degrade mode: the same restricted directory opens, accepts
+  // writes, compacts (which writes a fresh MANIFEST through Sync()) and
+  // reopens with the data intact.
+  {
+    ScopedEnvironmentVariable degrade(L"LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC",
+                                      L"1");
+    Options options;
+    options.create_if_missing = true;
+    DB* db = nullptr;
+    ASSERT_LEVELDB_OK(DB::Open(options, db_dir, &db));
+    ASSERT_LEVELDB_OK(db->Put(WriteOptions(), "restricted", "value"));
+    std::string value;
+    ASSERT_LEVELDB_OK(db->Get(ReadOptions(), "restricted", &value));
+    ASSERT_EQ("value", value);
+    ASSERT_LEVELDB_OK(db->CompactRange(nullptr, nullptr));
+    delete db;
+
+    ASSERT_LEVELDB_OK(DB::Open(options, db_dir, &db));
+    ASSERT_LEVELDB_OK(db->Get(ReadOptions(), "restricted", &value));
+    ASSERT_EQ("value", value);
+    delete db;
+  }
+
+  std::vector<std::string> leftovers;
+  ASSERT_LEVELDB_OK(env_->GetChildren(db_dir, &leftovers));
+  for (const std::string& name : leftovers) {
+    if (name == "." || name == "..") {
+      // GetChildren returns the dot entries on every platform (POSIX readdir
+      // includes them too, and neither Env filters them); they cannot be
+      // deleted as files.
+      continue;
+    }
+    ASSERT_LEVELDB_OK(env_->RemoveFile(db_dir + "/" + name));
+  }
+  ASSERT_LEVELDB_OK(env_->RemoveDir(db_dir));
 }
 
 }  // namespace leveldb
