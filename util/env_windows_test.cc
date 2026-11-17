@@ -507,6 +507,60 @@ class RestrictedDirectoryDacl {
   bool installed_ = false;
 };
 
+// GitHub Actions Windows runners run elevated: their token holds
+// SeBackupPrivilege/SeRestorePrivilege, and CreateFileW's
+// FILE_FLAG_BACKUP_SEMANTICS (FILE_OPEN_FOR_BACKUP_INTENT) lets a privilege
+// holder open a restricted directory anyway, defeating the DACL precondition
+// below. Disable both privileges for the guard's lifetime and restore them
+// on destruction; on a token that does not hold them this is a no-op.
+class DisabledBackupPrivileges {
+ public:
+  DisabledBackupPrivileges() {
+    HANDLE token = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(),
+                            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
+      return;
+    }
+    token_ = token;
+    const wchar_t* names[kPrivilegeCount] = {SE_BACKUP_PRIVILEGE_NAME,
+                                             SE_RESTORE_PRIVILEGE_NAME};
+    for (size_t i = 0; i < kPrivilegeCount; ++i) {
+      TOKEN_PRIVILEGES disable;
+      disable.PrivilegeCount = 1;
+      disable.Privileges[0].Attributes = 0;  // no SE_PRIVILEGE_ENABLED: disabled
+      if (!::LookupPrivilegeValueW(nullptr, names[i],
+                                   &disable.Privileges[0].Luid)) {
+        continue;
+      }
+      TOKEN_PRIVILEGES previous;
+      DWORD returned = 0;
+      if (::AdjustTokenPrivileges(token_, FALSE, &disable, sizeof(previous),
+                                  &previous, &returned)) {
+        // ERROR_NOT_ALL_ASSIGNED means the privilege is not held at all;
+        // nothing was changed and there is nothing to restore.
+        if (::GetLastError() != ERROR_NOT_ALL_ASSIGNED) {
+          restore_.push_back(previous);
+        }
+      }
+    }
+  }
+  ~DisabledBackupPrivileges() {
+    for (TOKEN_PRIVILEGES& state : restore_) {
+      ::AdjustTokenPrivileges(token_, FALSE, &state, 0, nullptr, nullptr);
+    }
+    if (token_ != nullptr) {
+      ::CloseHandle(token_);
+    }
+  }
+  DisabledBackupPrivileges(const DisabledBackupPrivileges&) = delete;
+  DisabledBackupPrivileges& operator=(const DisabledBackupPrivileges&) = delete;
+
+ private:
+  static constexpr size_t kPrivilegeCount = 2;
+  HANDLE token_ = nullptr;
+  std::vector<TOKEN_PRIVILEGES> restore_;
+};
+
 // Checklist item BC-19. In a directory whose DACL denies the attributes-write
 // right, opening the directory for the manifest's FlushFileBuffers() fails
 // with ERROR_ACCESS_DENIED while every child-file operation a database
@@ -525,6 +579,7 @@ TEST_F(EnvWindowsTest, ManifestSyncRestrictedDirectory) {
 
   RestrictedDirectoryDacl restricted(wide_db_dir);
   ASSERT_TRUE(restricted.ok());
+  DisabledBackupPrivileges privileges_disabled;
 
   // Precondition: the directory itself cannot be opened for write, but child
   // files can still be created and deleted.
