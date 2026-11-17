@@ -202,6 +202,7 @@ traced to code and to the check that keeps it true.
 | **[Per-fix regression tests for the 2026-11-07 wave](https://github.com/takomitkm/leveldb/commit/bf7212e)** — every fix in the table-C rows above ships with its own regression test (`BuilderTest` is a new suite registered in CMakeLists; the corruption, `ChangeOptions`, `ReadBlockIssue1349` and repair cases are named in each row's CI-guard cell), and each was verified red against the pre-fix commit before the fix landed | [bf7212e](https://github.com/takomitkm/leveldb/commit/bf7212e) through [527720c](https://github.com/takomitkm/leveldb/commit/527720c) | `leveldb_tests`; `win-quick` (`env_windows_test`); `optional-deps` | The tests exist because the whole wave passed the inherited suite green while carrying real defects — the suite knew nothing about any of these paths. Two details were only caught dynamically: the dangling `DBImpl*` in a first draft of the compaction test (debug SIGSEGV under gdb) and `ReadFile`'s kernel buffer probe (a short scratch with a 4 GiB request fails even when the fix is correct, so the test commits the contract-mandated 4 GiB scratch) | — |
 | **[Read-path boundary contracts pinned](https://github.com/takomitkm/leveldb/commit/07e88e8)** — failed varint decodes leave input and output untouched, successful ones advance exactly past the encoding, redundant-continuation encodings stay accepted; `SIZE_MAX` handle sizes are rejected as wrapping and the largest non-wrapping size goes through the allocation-failure path | [07e88e8](https://github.com/takomitkm/leveldb/commit/07e88e8) | `leveldb_tests` (`Coding.Varint*`, `ReadBlockIssue1349Test.RejectsHandleSizeThatWrapsWithTrailer`, `…RejectsLargestNonWrappingHandleSize`) | The three read-path guards ([aa3b900](https://github.com/takomitkm/leveldb/commit/aa3b900), [fb5dc12](https://github.com/takomitkm/leveldb/commit/fb5dc12), [7d10a9a](https://github.com/takomitkm/leveldb/commit/7d10a9a)) shipped without targeted tests. The restart-offset boundary was closed separately — see the next row | — |
 | **[The 4 GiB restart-offset boundary, closed with a real 4 GiB block](https://github.com/takomitkm/leveldb/commit/8c226e0)** — both boundary blocks built on one lazily-committed 4 GiB buffer (size U+5 with zero restarts → offset U+1 must come back `Corruption`; size U+4 → offset exactly U must stay accepted), judged by `NewIterator`'s status only: the uninitialized body is never iterated, so the test touches two pages and skips gracefully if the 4 GiB commit is unavailable | [8c226e0](https://github.com/takomitkm/leveldb/commit/8c226e0) | `leveldb_tests` (`BlockTest.RestartOffsetMustBeUint32Representable`) | Closes the gap the row above left open. Verified red against aa3b900's parent ([719f24b](https://github.com/takomitkm/leveldb/commit/719f24b): the offset truncated to 0 and the oversized block was accepted silently) and green here; note `NumRestarts() == 0` routes `NewIterator` to the empty iterator, which is what makes the two outcomes observable without decoding anything | — |
+| **[Manifest-sync degrade switch for ACL-restricted directories](https://github.com/takomitkm/leveldb/commit/6730b46)** — `LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC=1` opts the process into skipping only the directory-entry flush when the directory open fails with `ERROR_ACCESS_DENIED`; fail-closed remains the default and every other error still propagates | [6730b46](https://github.com/takomitkm/leveldb/commit/6730b46) | `win-quick` (`env_windows_test` `ManifestSyncRestrictedDirectory`) | The restricted-directory defect is real (audit probe: child create/rename succeeds, `GENERIC_WRITE` directory open returns error 5), but the failure policy was a pending product decision (BC-19). The test installs the audited protected-DACL recipe (Everyone granted everything except `FILE_WRITE_ATTRIBUTES`) and verifies the precondition, the default fail-closed open, and the degrade-mode open/compact/reopen round trip | — |
 
 ### Provenance, method, and scope — PR scan 2026-11-04 00:17, branch scan 2026-11-04 01:13 (UTC+8)
 
@@ -405,7 +406,7 @@ observation alone cannot certify any of the other layers.
 | Old Windows archives | Examined local agg.1/2/3 ZIPs contained one **2535-byte file** named `include/leveldb` instead of the public header directory. The agg.3 MSVC DLL Release archive matched the remote asset digest. | [b57269c](https://github.com/takomitkm/leveldb/commit/b57269c) installs and checks complete packages. Old archives remain historical failures; validate each new extracted asset rather than assuming the new scripts fixed every published file. |
 | MSVC runtime across DLL boundaries | Passing C++ objects across DLL/client boundaries requires compatible runtime and ABI settings. The older blanket `/MT` guidance is insufficient for DLL consumers. | [f11fe16](https://github.com/takomitkm/leveldb/commit/f11fe16) adjusts shared-runtime handling for DLL consumers. Test actual compiler, runtime, allocation, Debug/Release and loader combinations before claiming binary interchangeability. |
 | 2026-11-07 hardening wave ([dc2fe63](https://github.com/takomitkm/leveldb/commit/dc2fe63c21be889948bc79b1397f07d15eb67c7c)) | Backported strictness and error paths: bounded decompression pre-validation plus `nothrow` allocations ([PR #1354](https://github.com/google/leveldb/pull/1354)), restart-offset/handle-size/varint rejection ([#1367](https://github.com/google/leveldb/pull/1367), [#1380](https://github.com/google/leveldb/pull/1380)), `UINT64_MAX` `next_file_number` ([#1377](https://github.com/google/leveldb/pull/1377)), `ChangeOptions` invalid-call rejection ([#1340](https://github.com/google/leveldb/pull/1340) + follow-up), compaction/`BuildTable` fail instead of drop, repair metadata recompute and empty-table archiving, Windows ≥4 GiB chunked reads, directory-wide `_HAS_EXCEPTIONS=0` on MSVC. Public headers remain comment-only. | Valid-data invariance, new error visibility and the new test guards are covered by **BC-41–BC-48** in the checklist. The zstd cases of `ReadBlockIssue1349Test` only execute in the `optional-deps` job — verify with a real Snappy/Zstd environment and treat skips as untested. |
-| Directory sync and rename | A temporary directory allowed child creation/rename but rejected `GENERIC_WRITE` directory open with **error 5**; a normal directory opened and flushed. Rename visibility tests do not simulate power loss. | The permission requirement remains. Decide the supported filesystem/permission scope; do not silently turn a failed durability operation into success. SMB and physical power-loss behaviour remain unverified here. |
+| Directory sync and rename | A temporary directory allowed child creation/rename but rejected `GENERIC_WRITE` directory open with **error 5**; a normal directory opened and flushed. Rename visibility tests do not simulate power loss. | The permission requirement **fails closed by default**. Decided 2026-11-18: a process may explicitly opt into a documented degrade mode — see the decisions note below. SMB and physical power-loss behaviour remain unverified here. |
 | Compression capability | Packages without Snappy/Zstd cannot decode existing blocks using those codecs. Fixing the Zstd probe makes explicit Zstd selection effective. | Check upgrade and downgrade with real compressed blocks and verified decoder capabilities. Built-in CRC32C remains available when the external CRC32C library is disabled. |
 | Other deliberate changes | Corrupt-input checks, incomplete-tail recovery, CRLF/CR acceptance, best-effort repair, direct logger append, clock precision and build flags can change observations. | Test the documented contract. Do not reintroduce out-of-bounds reads, unsafe tail reuse or destructive logger behaviour merely to match historical bugs. No complete ABI or downstream compatibility certification is supplied. |
 
@@ -422,6 +423,39 @@ records version baselines, dependencies, fixtures, per-item reproduction steps,
 expected results, causes, repair options, necessity decisions and release gates.
 All future execution boxes start unchecked. Earlier component/WinAPI evidence
 is identified separately from work not yet performed.
+
+**Compatibility decisions (2026-11-18).** Three decision items from the
+checklist were settled:
+
+1. **BC-10 — path encoding is never guessed.** The interpretation of narrow
+   paths is fixed for the whole process lifetime by the build option
+   (`LEVELDB_WINDOWS_UTF8_PATHS`, the `-acp`/`-utf8` package variants). The
+   library never probes encodings, never switches after a not-found error, and
+   never creates a differently-interpreted database as a fallback. Confirmed as
+   policy; no code change.
+2. **BC-19 — fail closed by default, explicit opt-in degrade.** The manifest
+   directory-entry sync error (including the `ERROR_ACCESS_DENIED` of
+   ACL-restricted directories) still fails the open by default. Setting
+   `LEVELDB_WINDOWS_ALLOW_NO_DIR_SYNC=1` in the process environment opts into a
+   documented degrade mode: on that specific error only, the directory-entry
+   flush is skipped while the manifest **data** flush still runs, at the cost
+   of reduced durability (the directory entry is no longer guaranteed to
+   persist). Every other error code still fails. The flag is read per call, so
+   released DLL consumers can enable it without rebuilding.
+   [6730b46](https://github.com/takomitkm/leveldb/commit/6730b46) implements it
+   and `EnvWindowsTest.ManifestSyncRestrictedDirectory` guards it (precondition
+   → default fail → degrade-mode open/compact/reopen).
+3. **BC-39 — rollback is safe.** This fork writes upstream-format
+   sstable/WAL/MANIFEST/CURRENT and ships packages with optional codecs
+   disabled (asserted by the fail-closed release pipeline), so data written by
+   this fork stays readable after rolling back to an older leveldb build. If a
+   future release enables a codec or changes a format, this statement must be
+   re-evaluated. The broken Windows archives of agg.1/2/3 were removed on
+   2026-11-18 (all 24 lacked the 15 public headers); agg.4 assets and the
+   surviving tarballs are validated by the release pipeline.
+
+The BC-40 release-gate decision (when to soften the warning at the top of this
+file) is still open.
 
 
 ### F. Windows directory flush: who does it, who skips, and what it costs (2026-11-14)
