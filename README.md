@@ -599,10 +599,14 @@ window containing **only the flush calls**, 100 repetitions each, counting
 `DiskIo/FlushBuffers` and `Write` events. The parent-directory flush issues **exactly one
 disk flush IRP per call, the same +1.00/call as the volume-root flush**, so the call is
 *not* a no-op at the storage stack and MS-FSA §2.1.5.7 <80> is right that a directory
-flush exists. What it flushes, however, is an empty set: the write count does not move
-(**≈0.1 writes/call, against ≈1.3–3.1 for the root flush**, four runs). NTFS does not
-write the new file's MFT record or directory index in response to a directory-handle
-flush, so there is nothing for that flush to make durable. The conclusion for
+flush exists. What it flushes, however, is journal-only and half-covered: journal-signature
+attribution of the E17 logs shows the parent-dir flush pushes ~8 `$LogFile` records
+per rep with only half inside the durable prefix, and **zero** MFT-record or
+directory-index pages; the write count barely moves (**≈0.1 writes/call, against
+≈1.3–3.1 for the root flush**, four runs). So the log record for the create may be
+partially durable while the metadata it describes is not on the platter - whether
+real `ntfs.sys` recovery would resurrect the entry from the log is the open
+Tier-2 question. The conclusion for
 `SyncDirIfManifest()` is unchanged — without a volume-root flush the namespace change is
 not durable — but the mechanism is now precise: the flush is real, the metadata writeback
 is missing. Measurements and the consistency table:
