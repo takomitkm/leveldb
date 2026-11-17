@@ -473,7 +473,49 @@ class WindowsWritableFile : public WritableFile {
     if (!::FlushFileBuffers(dir.get())) {
       return WindowsError(dirname_, ::GetLastError());
     }
+
+    // Volume-root flush: triggers the metadata writeback that the
+    // parent-directory flush alone does not.  E17/E21 measured (QEMU + real
+    // Windows kernel, four 100-rep runs) that a parent-directory
+    // FlushFileBuffers issues a disk FlushBuffers IRP per call but NTFS does
+    // not write the new file's MFT record or directory index in response -
+    // the namespace entry is not made durable.  A volume-root flush issues
+    // the same flush IRP AND causes the metadata writeback.  Without it, the
+    // directory entry may be lost after a power failure.
+    std::wstring root = VolumeRootOf(WideCharPathFromNarrow(dirname_));
+    if (root.empty()) {
+      // Cannot determine the volume root (e.g. unsupported path); skip
+      // rather than fail - the parent-directory flush above still ran.
+      return status;
+    }
+    ScopedHandle vol(::CreateFileW(
+        root.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (!vol.is_valid()) {
+      return WindowsError(dirname_, ::GetLastError());
+    }
+    if (!::FlushFileBuffers(vol.get())) {
+      return WindowsError(dirname_, ::GetLastError());
+    }
     return status;
+  }
+
+  // Extracts the drive-letter prefix from a wide path, e.g. "D:\" from
+  // "D:\db\MANIFEST-001".  Does not use GetVolumePathNameW because its
+  // MinGW and MSVC declarations differ in the number of parameters, which
+  // breaks cross-platform compilation.  UNC paths (\\server\share\) and
+  // mounted folders are not handled: the function returns an empty string
+  // and the caller skips the volume-root flush (graceful degradation; the
+  // parent-directory flush above still ran).
+  static std::wstring VolumeRootOf(const std::wstring& wide_path) {
+    size_t colon = wide_path.find(L':');
+    if (colon > 0 && colon != std::wstring::npos &&
+        colon + 1 < wide_path.size() &&
+        wide_path[colon + 1] == L'\\') {
+      return wide_path.substr(0, colon + 2);
+    }
+    return L"";
   }
 
   static std::string Dirname(const std::string& filename) {
