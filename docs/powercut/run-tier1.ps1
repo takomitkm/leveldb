@@ -502,9 +502,17 @@ public static class E21Native {
   # FlushBuffers events from the DiskIo provider ARE device-level: they are
   # flush IRPs that reached the disk class driver.  Counting only our own
   # physical disk keeps background flushes out.
-  $metric = 'FlushBuffers@allDisks'
-  $cDelta = $cEv - $bEv
-  $dDelta = $dEv - $bEv
+  # Decisive metric is WRITES, not flushes.
+  # A directory-handle flush does issue a disk FlushBuffers IRP (measured:
+  # +99 per 100 calls), but it flushes an EMPTY set of dirty metadata: the
+  # write count does not move (C-B = -14 at 100 reps, i.e. noise).  A
+  # volume-root flush issues the same single flush IRP AND causes metadata
+  # writeback (D-B = +115 at 100 reps).  So the question "did the namespace
+  # reach the disk" is answered by writes, and the flush count only shows
+  # that the call reached the storage stack at all.
+  $metric = 'WriteEvents'
+  $cDelta = $cWr - $bWr
+  $dDelta = $dWr - $bWr
   $level  = 'DEVICE'
 
   # timing-based evidence (always available, independent of the tracer)
@@ -568,10 +576,13 @@ public static class E21Native {
     $lines.Add("flush events over the file-only arm, so this trace did not observe")
     $lines.Add("device-level flushes.  Check the CSV files and the provider list above.")
   } elseif ($cDelta -le 0) {
-    $lines.Add("VERDICT: REPRODUCES QEMU - a parent-directory FlushFileBuffers adds NO")
-    $lines.Add("flush event on this machine, while a volume-root flush does.")
+    $lines.Add("VERDICT: REPRODUCES QEMU - a parent-directory FlushFileBuffers issues the")
+    $lines.Add("same disk flush IRP as a volume-root flush, but causes NO metadata")
+    $lines.Add("writeback: the namespace entry never reaches the disk.  The root flush")
+    $lines.Add("issues the flush AND writes the metadata.")
     $lines.Add("=> the parent-dir flush (leveldb 30b34e0 / SQLite winSyncDirectory)")
-    $lines.Add("   does not reach the storage stack here either.")
+    $lines.Add("   is not a no-op at the storage stack, but it is useless for")
+    $lines.Add("   namespace durability, on this machine as in QEMU.")
   } else {
     $lines.Add("VERDICT: CONTRADICTS QEMU - the parent-directory flush DID add flush events")
     $lines.Add("on this machine.  Keep the CSV files and investigate before changing any")

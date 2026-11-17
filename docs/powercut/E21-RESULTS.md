@@ -1,0 +1,67 @@
+# E21 — 真机 / GitHub Actions 上的设备级 flush 证据（2026-11-17）
+
+**问题**：E17 在 QEMU（WinPE 19041 + Win10 22H2）上测到——`FlushFileBuffers(父目录)`
+产生 **0 条设备级写入**，只有 `FlushFileBuffers(卷根)` 才把命名空间推下盘。
+真机上是不是也这样？MS-FSA §2.1.5.7 注记 <80> 说"目录 flush 确保目录结构持久化"，
+到底谁对？
+
+**方法**：`run-tier1.ps1`，四个**累积**臂，每臂独立 ETW 会话（wpr 的 DiskIO profile，
+`tracerpt` 转 CSV），**测量窗口只包含 flush 调用**（建文件、开句柄都在窗口外，
+窗口约 0.5 s）：
+
+| 臂 | 操作 |
+|---|---|
+| A | 建文件+写 2048B，**不刷**（基线） |
+| B | A + `FlushFileBuffers(文件)` |
+| C | B + `FlushFileBuffers(父目录)` ← leveldb 30b34e0 / SQLite winSyncDirectory 的形状 |
+| D | B + `FlushFileBuffers(卷根)` ← 正对照 |
+
+四臂面对**同一份脏元数据**（文件都在窗口外创建），所以 C−B / D−B 就是那次调用自己的贡献。
+
+## 结果（GitHub Actions，windows-latest，100 轮/臂）
+
+| 臂 | FlushBuffers 事件 | Write 事件 | 文件刷耗时 | 目录刷耗时 |
+|---|---|---|---|---|
+| A 不刷 | 5 | 121 | — | — |
+| B 刷文件 | 105 | 286 | 0.215 ms | — |
+| **C 刷父目录** | **204**（+99） | **272**（**−14**） | 0.183 ms | **0.038 ms** |
+| **D 刷卷根** | **204**（+99） | **401**（**+115**） | 0.148 ms | — |
+
+25 轮那一轮的同样形状（用于交叉验证）：C−B = +26 flush / **+2 write**，
+D−B = +27 flush / **+78 write**。
+
+## 结论（三句话）
+
+1. **父目录 flush 不是空操作**：它确实向存储栈下发了一条 `DiskIo/FlushBuffers`
+   IRP——每调用一次一条，100 轮正好 +99。这就是 MS-FSA 注记 <80> 说的那个目录 flush，
+   文档没有凭空写。
+2. **但它刷的是"空集"**：同样 100 轮，Write 事件数**没有变化**（C−B = −14，噪声级）。
+   也就是说 NTFS 并没有因为这次调用把新文件的 MFT 记录/目录索引写出去——
+   磁盘收到了 flush，但没有任何新元数据可刷。
+3. **卷根 flush 才真的干活**：同样的单条 flush IRP（+99），但**额外带来 +115 条写**
+   （≈1–3 笔/轮，取决于轮数），把待写的元数据推下盘。
+
+**所以**：`FlushFileBuffers(父目录)` 与 `FlushFileBuffers(卷根)` 在**存储栈层面同形**
+（都是一条 flush），差别在**NTFS 是否因此把元数据写出去**——只有卷根会。
+对 leveldb 30b34e0 / SQLite `winSyncDirectory` 的含义不变：
+**这两个补丁在当前形状下不提供命名空间耐久性**；修法仍是加卷根刷（E17 臂 14/15 已验证
+rename/删除的修正协议）。
+
+## 方法学备注
+
+- 计时是独立的第二重信号，两轮都一致：目录刷比文件刷**快 5–7 倍**（0.038 vs 0.215 ms），
+  卷根刷比文件刷**慢 9 倍**（2.0 ms）——与"目录刷不等屏障、卷根刷做真活"吻合。
+- **StorPort provider 走不通**：它只给 "Dispatching/Completion of request"，
+  User Data 为空，没有 SRB function 字段（v6 实测 0 条 flush 事件）。
+- **logman 不支持多个 `-p`**：`Argument 'p' has been defined too many times`
+  （E_INVALIDARG），所以脚本现在优先用 wpr，logman 只作兜底且单 provider。
+- 写事件计数有 ~120 条/窗口的背景噪声，所以用 100 轮把信号抬到 +115；
+  25 轮的 +78 同向，量级差异来自背景波动。
+- 边界不变：GH runner 是虚拟机里的真 Windows 内核（Hyper-V/Azure 存储栈），
+  不是物理盘；盘自带 DRAM 缓存那一层仍未测，端到端断电（Tier-2）仍需要真机 + 智能插座。
+
+## 产物
+
+- 脚本：`docs/powercut/run-tier1.ps1`（v9，PowerShell 5.1/7 均可）
+- 工作流：`.github/workflows/e21-tier1.yml`（workflow_dispatch + push 触发，artifacts 收 report/log/csv）
+- 运行记录：run 44097368074（100 轮）、44096695751（25 轮）、44095811196（v7 首轮干净信号）
