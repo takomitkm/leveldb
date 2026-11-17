@@ -38,6 +38,13 @@ jobs:
           Write-Host "script exit code: $code"
           if ($code -ne 0) { exit $code }
 
+      - name: "Cost mode: single-call flush cost, idle and busy"
+        shell: pwsh
+        run: |
+          & ./docs/powercut/run-tier1.ps1 -Volume D: -NoPause -NoElevate -CostOnly -CostIters 50
+          $code = $LASTEXITCODE
+          Write-Host "cost-mode exit: $code"
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -47,4 +54,5 @@ jobs:
             docs/powercut/tier1-report-*.txt
             docs/powercut/tier1-log-*.txt
             docs/powercut/e21-*.csv
+            docs/powercut/tier1-cost-*.txt
           if-no-files-found: warn

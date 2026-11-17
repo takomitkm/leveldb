@@ -39,7 +39,9 @@ param(
   [switch]$NoElevate,
   [switch]$NoPause,
   [switch]$Elevated,
-  [switch]$Diagnose
+  [switch]$Diagnose,
+  [switch]$CostOnly,
+  [int]$CostIters = 50
 )
 
 $ErrorActionPreference = 'Stop'
@@ -250,6 +252,137 @@ public static class E21Native {
   }
 
   $wprPath = Join-Path $env:SystemRoot 'System32\wpr.exe'
+
+  # ---------------------------------------------------------- cost mode
+  # Each iteration DIRTIES the target first (create a file / write data),
+  # then measures exactly ONE flush.  Measuring repeated flushes on an
+  # already-clean directory gives ~0 and is meaningless.
+  if ($CostOnly) {
+    Write-Host ""
+    Write-Host "=== COST MODE: single-call flush cost (idle, then under write load) ===" -ForegroundColor Cyan
+
+    function Measure-CostSet {
+      param([int]$Iters)
+      $out = @{}
+      foreach ($kind in @('file','dir','root')) {
+        $times = New-Object System.Collections.Generic.List[double]
+        for ($i = 0; $i -lt $Iters; $i++) {
+          $sw = $null
+          try {
+            if ($kind -eq 'file') {
+              $path = Join-Path $workDir ("cost_f_{0}.bin" -f $i)
+              $h = New-PaddedFile -Path $path -Tag ("cost-file-$i")
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              [void][E21Native]::FlushFileBuffers($h)
+              $sw.Stop()
+              [void][E21Native]::CloseHandle($h)
+            }
+            elseif ($kind -eq 'dir') {
+              $path = Join-Path $workDir ("cost_d_{0}.bin" -f $i)
+              $h = New-PaddedFile -Path $path -Tag ("cost-dir-$i")
+              [void][E21Native]::CloseHandle($h)
+              $dh = Open-Directory -Path $workDir
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              [void][E21Native]::FlushFileBuffers($dh)
+              $sw.Stop()
+              [void][E21Native]::CloseHandle($dh)
+            }
+            else {
+              $path = Join-Path $rootDir ("e21_cost_r_{0}.bin" -f $i)
+              $h = New-PaddedFile -Path $path -Tag ("cost-root-$i")
+              [void][E21Native]::CloseHandle($h)
+              $rh = Open-Directory -Path $rootDir
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              [void][E21Native]::FlushFileBuffers($rh)
+              $sw.Stop()
+              [void][E21Native]::CloseHandle($rh)
+            }
+          } catch { }
+          if ($sw) { $times.Add($sw.Elapsed.TotalMilliseconds) | Out-Null }
+        }
+        $sorted = @($times | Sort-Object)
+        if ($sorted.Count -eq 0) { $out[$kind] = $null; continue }
+        $pick = { param($q) $sorted[[Math]::Min($sorted.Count - 1, [int][Math]::Floor($q * $sorted.Count))] }
+        $out[$kind] = [pscustomobject]@{
+          N    = $sorted.Count
+          Min  = [math]::Round($sorted[0], 3)
+          P50  = [math]::Round((& $pick 0.50), 3)
+          P90  = [math]::Round((& $pick 0.90), 3)
+          P99  = [math]::Round((& $pick 0.99), 3)
+          Max  = [math]::Round($sorted[$sorted.Count - 1], 3)
+          Mean = [math]::Round((($sorted | Measure-Object -Average).Average), 3)
+        }
+      }
+      return $out
+    }
+
+    function Show-CostSet {
+      param($Set, [string]$Label)
+      Write-Host ""
+      Write-Host ("-- {0} --" -f $Label) -ForegroundColor Yellow
+      Write-Host ("kind   n     min      p50      p90      p99      max     mean   (ms)")
+      foreach ($k in @('file','dir','root')) {
+        $r = $Set[$k]
+        if (-not $r) { Write-Host ("{0,-5} (no samples)" -f $k); continue }
+        Write-Host ("{0,-5} {1,3}  {2,7}  {3,7}  {4,7}  {5,7}  {6,7}  {7,7}" -f `
+            $k, $r.N, $r.Min, $r.P50, $r.P90, $r.P99, $r.Max, $r.Mean)
+      }
+      if ($Set['file'] -and $Set['dir'] -and $Set['root'] -and $Set['file'].P50 -gt 0) {
+        Write-Host ("ratios vs file p50: dir {0}x, root {1}x" -f `
+            [math]::Round($Set['dir'].P50 / $Set['file'].P50, 2),
+            [math]::Round($Set['root'].P50 / $Set['file'].P50, 2))
+      }
+    }
+
+    Write-Host ("iters per kind: {0}" -f $CostIters)
+    $idle = Measure-CostSet -Iters $CostIters
+    Show-CostSet -Set $idle -Label "IDLE volume"
+
+    # background writer: keeps the volume dirty so a volume-root flush has
+    # real work to do (its cost scales with other dirty data)
+    $bgDir = Join-Path $Volume '\e21bg'
+    New-Item -ItemType Directory -Force -Path $bgDir | Out-Null
+    $job = Start-Job -ScriptBlock {
+      param($d)
+      $buf = New-Object byte[] 65536
+      for ($i = 0; $i -lt $buf.Length; $i++) { $buf[$i] = 0x41 }
+      $n = 0
+      while ($true) {
+        try { [IO.File]::WriteAllBytes((Join-Path $d ("bg_{0}.bin" -f ($n % 8))), $buf) } catch { }
+        $n++
+      }
+    } -ArgumentList $bgDir
+    Start-Sleep -Seconds 2
+    Write-Host ""
+    Write-Host "background writer started (job $($job.Id))" -ForegroundColor DarkYellow
+    $busy = Measure-CostSet -Iters $CostIters
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Show-CostSet -Set $busy -Label "BUSY volume (background writer active)"
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("E21 COST report - $($script:Stamp)")
+    $lines.Add(("Host   : {0}" -f $env:COMPUTERNAME))
+    $lines.Add(("OS     : {0} build {1}" -f $os.Caption, [Environment]::OSVersion.Version.Build))
+    $lines.Add(("Volume : {0} ({1})   iters/kind: {2}" -f $Volume, $disk.FileSystem, $CostIters))
+    $lines.Add("")
+    foreach ($pair in @(@('IDLE',$idle), @('BUSY',$busy))) {
+      $lines.Add("== " + $pair[0] + " ==")
+      $lines.Add("kind    n     min      p50      p90      p99      max     mean  (ms)")
+      foreach ($k in @('file','dir','root')) {
+        $r = $pair[1][$k]
+        if (-not $r) { continue }
+        $lines.Add(("{0,-6} {1,3}  {2,7}  {3,7}  {4,7}  {5,7}  {6,7}  {7,7}" -f `
+            $k, $r.N, $r.Min, $r.P50, $r.P90, $r.P99, $r.Max, $r.Mean))
+      }
+      $lines.Add("")
+    }
+    $costReport = Join-Path $script:Root ("tier1-cost-{0}.txt" -f $script:Stamp)
+    $lines | Set-Content -Path $costReport -Encoding UTF8
+    Write-Host ""
+    Write-Host ("Cost report: {0}" -f $costReport) -ForegroundColor Cyan
+    return
+  }
 
   # 2) wpr first: its DiskIO profile emits DiskIo/FlushBuffers events
   if (Test-Path $wprPath) {
