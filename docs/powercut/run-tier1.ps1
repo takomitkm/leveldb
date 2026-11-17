@@ -575,7 +575,11 @@ public static class E21Native {
     $lines.Add("VERDICT: INCONCLUSIVE - the volume-root arm (positive control) added no")
     $lines.Add("flush events over the file-only arm, so this trace did not observe")
     $lines.Add("device-level flushes.  Check the CSV files and the provider list above.")
-  } elseif ($cDelta -le 0) {
+  } elseif ($cDelta -lt ($dDelta * 0.25)) {
+    # noise in the write counter is ~+/-30 per window, so compare the dir
+    # delta against the root delta instead of against zero
+    $lines.Add(("per call: dir flush {0} writes, root flush {1} writes (reps={2})" -f `
+        [math]::Round($cDelta / $Reps, 2), [math]::Round($dDelta / $Reps, 2), $Reps))
     $lines.Add("VERDICT: REPRODUCES QEMU - a parent-directory FlushFileBuffers issues the")
     $lines.Add("same disk flush IRP as a volume-root flush, but causes NO metadata")
     $lines.Add("writeback: the namespace entry never reaches the disk.  The root flush")
