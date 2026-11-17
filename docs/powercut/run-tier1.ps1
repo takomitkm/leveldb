@@ -1,31 +1,34 @@
 <#
-  run-tier1.ps1 - E21 Tier-1: device-level flush evidence on real hardware.
+  run-tier1.ps1 (v3) - E21 Tier-1: device-level flush evidence on real hardware.
 
   Answers: does FlushFileBuffers on a PARENT DIRECTORY emit a flush to the
   storage stack, compared with FlushFileBuffers on the VOLUME ROOT (the
   effective call in the QEMU rigs)?
 
-  Four cumulative arms, each traced in its own ETW session (logman +
-  tracerpt, both built into Windows):
+  Four cumulative arms:
 
     A  create+write, no flush                 (baseline / journal noise)
     B  A + FlushFileBuffers(file)             (upstream behaviour)
     C  B + FlushFileBuffers(parent dir)       (leveldb 30b34e0 / SQLite shape)
     D  B + FlushFileBuffers(volume root)      (positive control for the tracer)
 
-  Deltas vs B isolate the contribution of the call added by that arm.
+  Tracing: probes which ETW providers this build actually registers
+  (logman query providers), then tries logman, then wpr.  Every tool error
+  is captured into the log/report instead of being swallowed.
 
-  Works on Windows PowerShell 5.1 and PowerShell 7.  Everything is written
-  to a transcript log from the first line, so a crash still leaves evidence.
+  Always available signal: the wall-clock duration of each flush call.
+  A directory flush that is a device-level no-op is typically one to two
+  orders of magnitude faster than a file flush that really waits for a
+  barrier.  The report prints that ratio even when tracing fails.
+
+  Works on Windows PowerShell 5.1 and 7.
 
   Usage:
-    # in an already-elevated shell (recommended locally - single window):
+    # already-elevated shell, single window:
     powershell -NoProfile -ExecutionPolicy Bypass -File .\run-tier1.ps1 -Volume D: -NoElevate
-
-    # let the script elevate itself (a second window opens):
+    # let the script elevate itself:
     powershell -NoProfile -ExecutionPolicy Bypass -File .\run-tier1.ps1 -Volume D:
-
-    # unattended (CI): no pause, no elevation prompt
+    # unattended (CI):
     pwsh -NoProfile -ExecutionPolicy Bypass -File .\run-tier1.ps1 -Volume D: -NoPause
 #>
 param(
@@ -46,6 +49,10 @@ $script:ReportPath = Join-Path $script:Root ("tier1-report-{0}.txt" -f $script:S
 $script:Failed     = $false
 $script:Relaunched = $false
 $script:ProvidersUsed = ''
+$script:LogmanForm    = ''
+$script:Tracer        = 'none'
+$script:ToolErrors    = New-Object System.Collections.Generic.List[string]
+$script:ProviderAvail = @{}
 
 try { Start-Transcript -Path $script:LogPath -Force | Out-Null } catch { }
 
@@ -66,7 +73,7 @@ try {
     Write-Host "Not elevated - opening an elevated window..." -ForegroundColor Yellow
     Start-Process -FilePath $exe -ArgumentList $argLine -Verb RunAs | Out-Null
     $script:Relaunched = $true
-    Write-Host ("That window runs the test and keeps its own log: {0}" -f $script:LogPath) -ForegroundColor Yellow
+    Write-Host ("That window keeps its own log: {0}" -f $script:LogPath) -ForegroundColor Yellow
     return
   }
 
@@ -80,9 +87,7 @@ try {
     $avail = (Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 } | ForEach-Object { $_.DeviceID }) -join ', '
     throw "Volume $Volume not found. Fixed volumes on this machine: $avail"
   }
-  if ($disk.FileSystem -ne 'NTFS') {
-    throw "Volume $Volume is $($disk.FileSystem); this test requires NTFS"
-  }
+  if ($disk.FileSystem -ne 'NTFS') { throw "Volume $Volume is $($disk.FileSystem); this test requires NTFS" }
   if ($disk.FreeSpace -lt 64MB) {
     throw ("Volume $Volume has only {0} MB free" -f [math]::Round($disk.FreeSpace / 1MB))
   }
@@ -101,7 +106,6 @@ try {
   Write-Host ("PS        : {0}" -f $PSVersionTable.PSVersion)
   Write-Host ("Volume    : {0}  ({1}, {2} GB free)" -f $Volume, $disk.FileSystem, [math]::Round($disk.FreeSpace / 1GB, 1))
   Write-Host ("Scratch   : {0}" -f $workDir)
-  Write-Host ("Reps/arm  : {0}   TraceLevel: {1}" -f $Reps, $TraceLevel)
   Write-Host ""
 
   # ------------------------------------------------------------ P/Invoke API
@@ -165,31 +169,119 @@ public static class E21Native {
     }
   }
 
-  # ------------------------------------------------------------ ETW plumbing
+  # ------------------------------------------------- tracer selection (v3)
+  # 1) find out which providers this build registers
+  Write-Host "Probing ETW providers..." -ForegroundColor Yellow
+  $provOut = @()
+  try { $provOut = & logman query providers 2>&1 } catch { }
+  foreach ($n in @('Microsoft-Windows-Kernel-Disk','Microsoft-Windows-StorPort','Microsoft-Windows-Kernel-File')) {
+    $hit = $false
+    foreach ($line in $provOut) { if ("$line" -like "*$n*") { $hit = $true; break } }
+    $script:ProviderAvail[$n] = $hit
+    Write-Host ("  {0,-38} {1}" -f $n, $(if ($hit) { 'registered' } else { 'NOT FOUND' })) -ForegroundColor Gray
+  }
+
+  $available = @()
+  foreach ($n in @('Microsoft-Windows-Kernel-Disk','Microsoft-Windows-StorPort','Microsoft-Windows-Kernel-File')) {
+    if ($script:ProviderAvail[$n]) { $available += $n }
+  }
+
+  $wprPath = Join-Path $env:SystemRoot 'System32\wpr.exe'
+
+  # 2) self-test logman - two argument forms, verbose first
+  #    (standalone -level/-max are not accepted by every logman build; the
+  #     documented form is: -p <provider> [flags [level]])
+  if ($available.Count -gt 0) {
+    $forms = @(
+      @{ Label = 'flags+level'; Build = { param($provs) $a = @(); foreach ($p in $provs) { $a += @('-p', $p, '0xFFFFFFFF', '5') }; $a } },
+      @{ Label = 'plain';       Build = { param($provs) $a = @(); foreach ($p in $provs) { $a += @('-p', $p) }; $a } }
+    )
+    foreach ($form in $forms) {
+      $testEtl = Join-Path $script:Root ("e21-selftest-{0}.etl" -f $script:Stamp)
+      Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+      $larg = @('create','trace','e21selftest','-o',$testEtl,'-ets')
+      $larg += (& $form.Build $available)
+      $out = & logman @larg 2>&1
+      $rc  = $LASTEXITCODE
+      & logman stop   e21selftest -ets 2>&1 | Out-Null
+      & logman delete e21selftest      2>&1 | Out-Null
+      Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+      if ($rc -eq 0) {
+        $script:Tracer = 'logman'
+        $script:LogmanForm = $form.Label
+        $script:ProvidersUsed = ($available -join ',')
+        Write-Host ("  tracer: logman OK ({0}; form={1})" -f $script:ProvidersUsed, $form.Label) -ForegroundColor Green
+        break
+      } else {
+        $msg = ("logman[{0}] rc={1} (0x{2:X8}) : {3}" -f $form.Label, $rc, [uint32]($rc -band 0xFFFFFFFF), (($out | ForEach-Object { "$_" }) -join ' | '))
+        $script:ToolErrors.Add($msg) | Out-Null
+        Write-Host ("  tracer: logman[{0}] FAILED - {1}" -f $form.Label, $msg) -ForegroundColor DarkYellow
+      }
+    }
+  } else {
+    $script:ToolErrors.Add('no candidate ETW provider is registered on this build') | Out-Null
+    Write-Host "  tracer: no candidate provider registered" -ForegroundColor DarkYellow
+  }
+
+  # 3) fall back to wpr
+  if ($script:Tracer -eq 'none' -and (Test-Path $wprPath)) {
+    $testEtl = Join-Path $script:Root ("e21-selftest-{0}.etl" -f $script:Stamp)
+    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+    $out = & $wprPath -start DiskIO -filemode 2>&1
+    $rc  = $LASTEXITCODE
+    if ($rc -eq 0) {
+      Start-Sleep -Milliseconds 400
+      & $wprPath -stop $testEtl 2>&1 | Out-Null
+      if (Test-Path $testEtl) {
+        $script:Tracer = 'wpr'
+        $script:ProvidersUsed = 'wpr DiskIO profile'
+        Write-Host "  tracer: wpr OK (DiskIO profile)" -ForegroundColor Green
+      } else {
+        $script:ToolErrors.Add('wpr produced no .etl') | Out-Null
+        Write-Host "  tracer: wpr produced no .etl" -ForegroundColor DarkYellow
+      }
+    } else {
+      $msg = ("wpr rc={0} : {1}" -f $rc, (($out | ForEach-Object { "$_" }) -join ' | '))
+      $script:ToolErrors.Add($msg) | Out-Null
+      Write-Host ("  tracer: wpr FAILED - " + $msg) -ForegroundColor DarkYellow
+    }
+    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+  }
+
+  if ($script:Tracer -eq 'none') {
+    Write-Host "  => no tracer available; falling back to call-duration evidence only." -ForegroundColor DarkYellow
+  }
+
   function Start-FlushTrace {
     param([string]$Name, [string]$Etl)
-    & logman stop   $Name -ets 2>&1 | Out-Null
-    & logman delete $Name     2>&1 | Out-Null
-    $sets = @(
-      @('Microsoft-Windows-Kernel-Disk','Microsoft-Windows-StorPort','Microsoft-Windows-Kernel-File'),
-      @('Microsoft-Windows-StorPort'),
-      @('Microsoft-Windows-Kernel-Disk'),
-      @('Microsoft-Windows-Kernel-File')
-    )
-    foreach ($set in $sets) {
-      $larg = @('create','trace',$Name,'-o',$Etl,'-ets','-level',$TraceLevel,'-max','256')
-      foreach ($p in $set) { $larg += @('-p', $p) }
+    if ($script:Tracer -eq 'logman') {
+      & logman stop   $Name -ets 2>&1 | Out-Null
+      & logman delete $Name     2>&1 | Out-Null
+      $larg = @('create','trace',$Name,'-o',$Etl,'-ets')
+      $provs = $script:ProvidersUsed -split ','
+      if ($script:LogmanForm -eq 'flags+level') {
+        foreach ($p in $provs) { $larg += @('-p', $p, '0xFFFFFFFF', '5') }
+      } else {
+        foreach ($p in $provs) { $larg += @('-p', $p) }
+      }
       & logman @larg 2>&1 | Out-Null
-      if ($LASTEXITCODE -eq 0) { $script:ProvidersUsed = ($set -join ','); return }
+      if ($LASTEXITCODE -ne 0) { throw "logman create trace failed (rc=$LASTEXITCODE)" }
+    } elseif ($script:Tracer -eq 'wpr') {
+      $out = & (Join-Path $env:SystemRoot 'System32\wpr.exe') -start DiskIO -filemode 2>&1
+      if ($LASTEXITCODE -ne 0) { throw ("wpr start failed: " + (($out | ForEach-Object { "$_" }) -join ' | ')) }
     }
-    throw "logman could not start any ETW provider set (last exit $LASTEXITCODE)"
   }
 
   function Stop-FlushTrace {
-    param([string]$Name)
-    & logman stop $Name -ets 2>&1 | Out-Null
-    Start-Sleep -Milliseconds 500
-    & logman delete $Name 2>&1 | Out-Null
+    param([string]$Name, [string]$Etl)
+    if ($script:Tracer -eq 'logman') {
+      & logman stop $Name -ets 2>&1 | Out-Null
+      Start-Sleep -Milliseconds 500
+      & logman delete $Name 2>&1 | Out-Null
+    } elseif ($script:Tracer -eq 'wpr') {
+      Start-Sleep -Milliseconds 300
+      & (Join-Path $env:SystemRoot 'System32\wpr.exe') -stop $Etl 2>&1 | Out-Null
+    }
   }
 
   function Convert-Trace {
@@ -204,15 +296,13 @@ public static class E21Native {
     param([string]$Csv)
     $flush = 0; $srb = 0
     $samples = New-Object System.Collections.Generic.List[string]
-    if (-not $Csv) {
-      return [pscustomobject]@{ FlushEvents = 0; SrbFlush = 0; Samples = @() }
-    }
+    if (-not $Csv) { return [pscustomobject]@{ FlushEvents = 0; SrbFlush = 0; Samples = @() } }
     foreach ($line in [IO.File]::ReadLines($Csv)) {
       $hit = $false
       if ($line -match '(?i)flush') { $flush++; $hit = $true }
       if ($line -match '(?i)SrbFunction' -and $line -match '(?i)(0x0?F\b|,15,|\b15\b)') { $srb++; $hit = $true }
-      if ($hit -and $samples.Count -lt 4) {
-        $samples.Add($line.Substring(0, [Math]::Min(220, $line.Length))) | Out-Null
+      if ($hit -and $samples.Count -lt 3) {
+        $samples.Add($line.Substring(0, [Math]::Min(200, $line.Length))) | Out-Null
       }
     }
     return [pscustomobject]@{ FlushEvents = $flush; SrbFlush = $srb; Samples = $samples.ToArray() }
@@ -233,8 +323,9 @@ public static class E21Native {
     $csv  = Join-Path $script:Root ("e21-{0}-{1}.csv" -f $arm.Id, $script:Stamp)
     $name = "e21trace" + $arm.Id
 
-    Write-Host ("[{0}] {1} tracing..." -f $arm.Id, $arm.Name) -ForegroundColor Yellow
-    Start-FlushTrace -Name $name -Etl $etl
+    Write-Host ("[{0}] {1} tracing={2}..." -f $arm.Id, $arm.Name, $script:Tracer) -ForegroundColor Yellow
+    try { Start-FlushTrace -Name $name -Etl $etl }
+    catch { $script:ToolErrors.Add("arm $($arm.Id) start: " + $_.Exception.Message) | Out-Null }
 
     $timings = New-Object System.Collections.Generic.List[object]
     $errors  = New-Object System.Collections.Generic.List[string]
@@ -261,8 +352,9 @@ public static class E21Native {
       }
     }
 
-    Start-Sleep -Milliseconds 800
-    Stop-FlushTrace -Name $name
+    try { Stop-FlushTrace -Name $name -Etl $etl }
+    catch { $script:ToolErrors.Add("arm $($arm.Id) stop: " + $_.Exception.Message) | Out-Null }
+
     $csvOut = Convert-Trace -Etl $etl -Csv $csv
     $ev     = Measure-FlushEvents -Csv $csvOut
 
@@ -281,7 +373,6 @@ public static class E21Native {
       RootMs      = $(if ($avgMs.ContainsKey('root')) { $avgMs['root'] } else { '' })
       Errors      = $errors.Count
       Csv         = (Split-Path -Leaf $csvOut)
-      Providers   = $script:ProvidersUsed
     }
     $results.Add($row) | Out-Null
 
@@ -302,22 +393,26 @@ public static class E21Native {
   $dEv  = $(if ($byId.ContainsKey('D')) { $byId['D'].FlushEvents } else { 0 })
 
   if ($dSrb -gt $bSrb) {
-    $metric = 'SrbFlush'
-    $cDelta = $cSrb - $bSrb
-    $dDelta = $dSrb - $bSrb
+    $metric = 'SrbFlush'; $cDelta = $cSrb - $bSrb; $dDelta = $dSrb - $bSrb
   } else {
-    $metric = 'FlushEvents'
-    $cDelta = $cEv - $bEv
-    $dDelta = $dEv - $bEv
+    $metric = 'FlushEvents'; $cDelta = $cEv - $bEv; $dDelta = $dEv - $bEv
+  }
+
+  # timing ratio (works even with no tracer at all)
+  $fMs = $byId['B'].FileMs; $dMs = $byId['C'].DirMs; $rMs = $byId['D'].RootMs
+  $ratio = ''
+  if (($fMs -ne '') -and ($dMs -ne '') -and ([double]$fMs -gt 0)) {
+    $ratio = [math]::Round(([double]$dMs / [double]$fMs), 3)
   }
 
   $lines = New-Object System.Collections.Generic.List[string]
   $lines.Add("E21 Tier-1 report - $($script:Stamp)")
-  $lines.Add(("Host   : {0}" -f $env:COMPUTERNAME))
-  $lines.Add(("OS     : {0} build {1}" -f $os.Caption, [Environment]::OSVersion.Version.Build))
-  $lines.Add(("PS     : {0}" -f $PSVersionTable.PSVersion))
-  $lines.Add(("Volume : {0} ({1})" -f $Volume, $disk.FileSystem))
-  $lines.Add(("Reps   : {0}   TraceLevel: {1}   Providers: {2}" -f $Reps, $TraceLevel, $script:ProvidersUsed))
+  $lines.Add(("Host    : {0}" -f $env:COMPUTERNAME))
+  $lines.Add(("OS      : {0} build {1}" -f $os.Caption, [Environment]::OSVersion.Version.Build))
+  $lines.Add(("PS      : {0}" -f $PSVersionTable.PSVersion))
+  $lines.Add(("Volume  : {0} ({1})" -f $Volume, $disk.FileSystem))
+  $lines.Add(("Reps    : {0}   Tracer: {1}   Providers: {2}" -f $Reps, $script:Tracer, $script:ProvidersUsed))
+  $lines.Add(("Prov avail: " + (($script:ProviderAvail.Keys | ForEach-Object { "$_=" + $script:ProviderAvail[$_] }) -join ' ')))
   $lines.Add("")
   $lines.Add("arm  operation            flushEvents  srbFlush  fileMs  dirMs  rootMs  errors")
   foreach ($r in $results) {
@@ -325,14 +420,21 @@ public static class E21Native {
         $r.Arm, $r.Operation, $r.FlushEvents, $r.SrbFlush, $r.FileMs, $r.DirMs, $r.RootMs, $r.Errors))
   }
   $lines.Add("")
+  $lines.Add(("TIMING: file flush {0} ms, dir flush {1} ms, root flush {2} ms, dir/file ratio {3}" -f $fMs, $dMs, $rMs, $ratio))
+  $lines.Add("")
   $lines.Add(("DELTA vs B (flush file only), metric = {0}:" -f $metric))
   $lines.Add(("  C - B (parent directory flush) = {0}" -f $cDelta))
   $lines.Add(("  D - B (volume root flush)      = {0}   <- positive control" -f $dDelta))
   $lines.Add("")
-  if ($dDelta -le 0) {
+  if ($script:Tracer -eq 'none') {
+    $lines.Add("VERDICT: NO TRACER - ETW could not be started on this build, so there is")
+    $lines.Add("no device-level evidence.  Use the TIMING line above as a weak hint only:")
+    $lines.Add("a dir/file ratio well below ~0.2 suggests the directory flush returned")
+    $lines.Add("without waiting for a barrier.")
+  } elseif ($dDelta -le 0) {
     $lines.Add("VERDICT: INCONCLUSIVE - the volume-root arm (positive control) added no")
     $lines.Add("flush events over the file-only arm, so this trace did not observe")
-    $lines.Add("device-level flushes.  Check that the StorPort provider is enabled.")
+    $lines.Add("device-level flushes.  Check the CSV files and the provider list above.")
   } elseif ($cDelta -le 0) {
     $lines.Add("VERDICT: REPRODUCES QEMU - a parent-directory FlushFileBuffers adds NO")
     $lines.Add("flush event on this machine, while a volume-root flush does.")
@@ -340,13 +442,17 @@ public static class E21Native {
     $lines.Add("   does not reach the storage stack here either.")
   } else {
     $lines.Add("VERDICT: CONTRADICTS QEMU - the parent-directory flush DID add flush events")
-    $lines.Add("on this machine.  Keep the CSV files: investigate before changing any")
+    $lines.Add("on this machine.  Keep the CSV files and investigate before changing any")
     $lines.Add("patch wording.")
   }
   $lines.Add("")
+  if ($script:ToolErrors.Count -gt 0) {
+    $lines.Add("TOOL ERRORS:")
+    foreach ($e in $script:ToolErrors) { $lines.Add("  " + $e) }
+    $lines.Add("")
+  }
   $lines.Add("Note: a flush reaching the storage stack is necessary but not sufficient")
   $lines.Add("for power-loss durability (the drive's own cache is a separate layer).")
-  $lines.Add("Tier-2 (real power cut) is still required to prove end-to-end survival.")
   $lines.Add(("Transcript: {0}" -f (Split-Path -Leaf $script:LogPath)))
 
   $lines | Set-Content -Path $script:ReportPath -Encoding UTF8
