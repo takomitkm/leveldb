@@ -522,8 +522,10 @@ class DisabledBackupPrivileges {
       return;
     }
     token_ = token;
-    const wchar_t* names[kPrivilegeCount] = {SE_BACKUP_PRIVILEGE_NAME,
-                                             SE_RESTORE_PRIVILEGE_NAME};
+    // The privilege names as LookupPrivilegeValueW expects them (winnt.h's
+    // SE_BACKUP_NAME/SE_RESTORE_NAME macros expand to these strings).
+    const wchar_t* names[kPrivilegeCount] = {L"SeBackupPrivilege",
+                                             L"SeRestorePrivilege"};
     for (size_t i = 0; i < kPrivilegeCount; ++i) {
       TOKEN_PRIVILEGES disable;
       disable.PrivilegeCount = 1;
