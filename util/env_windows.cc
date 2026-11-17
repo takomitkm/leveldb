@@ -493,10 +493,10 @@ class WindowsWritableFile : public WritableFile {
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
     if (!vol.is_valid()) {
-      return WindowsError(root, ::GetLastError());
+      return WindowsError(dirname_, ::GetLastError());
     }
     if (!::FlushFileBuffers(vol.get())) {
-      return WindowsError(root, ::GetLastError());
+      return WindowsError(dirname_, ::GetLastError());
     }
     return status;
   }
