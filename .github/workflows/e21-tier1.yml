@@ -33,7 +33,7 @@ jobs:
       - name: "Run Tier-1 flush trace on volume D"
         shell: pwsh
         run: |
-          & ./docs/powercut/run-tier1.ps1 -Volume D: -NoPause -NoElevate -TraceLevel 5 -Reps 5
+          & ./docs/powercut/run-tier1.ps1 -Volume D: -NoPause -NoElevate -TraceLevel 5 -Reps 25
           $code = $LASTEXITCODE
           Write-Host "script exit code: $code"
           if ($code -ne 0) { exit $code }

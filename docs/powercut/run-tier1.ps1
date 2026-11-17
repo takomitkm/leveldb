@@ -33,7 +33,7 @@
 #>
 param(
   [string]$Volume = 'D:',
-  [int]$Reps = 3,
+  [int]$Reps = 25,
   [int]$TraceLevel = 5,
   [switch]$KeepEtl,
   [switch]$NoElevate,
@@ -92,6 +92,14 @@ try {
   if ($disk.FreeSpace -lt 64MB) {
     throw ("Volume $Volume has only {0} MB free" -f [math]::Round($disk.FreeSpace / 1MB))
   }
+
+  # physical disk behind the target volume - used to filter DiskIo events
+  $diskNumber = -1
+  try {
+    $letter = $Volume.Substring(0, 1)
+    $part   = Get-Partition -DriveLetter $letter -ErrorAction Stop
+    $diskNumber = [int]$part.DiskNumber
+  } catch { }
 
   $workDir = Join-Path $Volume '\e21'
   New-Item -ItemType Directory -Force -Path $workDir | Out-Null
@@ -243,34 +251,40 @@ public static class E21Native {
 
   $wprPath = Join-Path $env:SystemRoot 'System32\wpr.exe'
 
-  # 2) self-test logman - two argument forms, verbose first
-  #    (standalone -level/-max are not accepted by every logman build; the
-  #     documented form is: -p <provider> [flags [level]])
+  # 2) self-test logman
+  #    This logman build rejects more than one -p per session:
+  #    "Argument 'p' has been defined too many times." (E_INVALIDARG)
+  #    So: ONE provider per session, the decisive one (StorPort) first.
   if ($available.Count -gt 0) {
-    $forms = @(
-      @{ Label = 'flags+level'; Build = { param($provs) $a = @(); foreach ($p in $provs) { $a += @('-p', $p, '0xFFFFFFFF', '5') }; $a } },
-      @{ Label = 'plain';       Build = { param($provs) $a = @(); foreach ($p in $provs) { $a += @('-p', $p) }; $a } }
-    )
-    foreach ($form in $forms) {
-      $testEtl = Join-Path $script:Root ("e21-selftest-{0}.etl" -f $script:Stamp)
-      Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
-      $larg = @('create','trace','e21selftest','-o',$testEtl,'-ets')
-      $larg += (& $form.Build $available)
-      $out = & logman @larg 2>&1
-      $rc  = $LASTEXITCODE
-      & logman stop   e21selftest -ets 2>&1 | Out-Null
-      & logman delete e21selftest      2>&1 | Out-Null
-      Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
-      if ($rc -eq 0) {
-        $script:Tracer = 'logman'
-        $script:LogmanForm = $form.Label
-        $script:ProvidersUsed = ($available -join ',')
-        Write-Host ("  tracer: logman OK ({0}; form={1})" -f $script:ProvidersUsed, $form.Label) -ForegroundColor Green
-        break
-      } else {
-        $msg = ("logman[{0}] rc={1} {2} : {3}" -f $form.Label, $rc, ('0x{0:X8}' -f ([int64]$rc -band [int64]0xFFFFFFFF)), (($out | ForEach-Object { "$_" }) -join ' | '))
-        $script:ToolErrors.Add($msg) | Out-Null
-        Write-Host ("  tracer: logman[{0}] FAILED - {1}" -f $form.Label, $msg) -ForegroundColor DarkYellow
+    $order  = @('Microsoft-Windows-StorPort','Microsoft-Windows-Kernel-Disk','Microsoft-Windows-Kernel-File')
+    $picked = $false
+    foreach ($prov in $order) {
+      if ($picked) { break }
+      if (-not $script:ProviderAvail[$prov]) { continue }
+      foreach ($form in @('flags+level','plain')) {
+        if ($picked) { break }
+        $testEtl = Join-Path $script:Root ("e21-selftest-{0}.etl" -f $script:Stamp)
+        Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+        $larg = @('create','trace','e21selftest','-o',$testEtl,'-ets')
+        if ($form -eq 'flags+level') { $larg += @('-p', $prov, '0xFFFFFFFF', '5') }
+        else                          { $larg += @('-p', $prov) }
+        $out = & logman @larg 2>&1
+        $rc  = $LASTEXITCODE
+        & logman stop   e21selftest -ets 2>&1 | Out-Null
+        & logman delete e21selftest      2>&1 | Out-Null
+        Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+        if ($rc -eq 0) {
+          $script:Tracer        = 'logman'
+          $script:LogmanForm    = $form
+          $script:ProvidersUsed = $prov
+          $picked = $true
+          Write-Host ("  tracer: logman OK (provider={0}; form={1})" -f $prov, $form) -ForegroundColor Green
+        } else {
+          $hex = ('0x{0:X8}' -f ([int64]$rc -band [int64]0xFFFFFFFF))
+          $msg = ("logman[{0}/{1}] rc={2} {3} : {4}" -f $prov, $form, $rc, $hex, (($out | ForEach-Object { "$_" }) -join ' | '))
+          $script:ToolErrors.Add($msg) | Out-Null
+          Write-Host ("  tracer: " + $msg) -ForegroundColor DarkYellow
+        }
       }
     }
   } else {
@@ -313,11 +327,10 @@ public static class E21Native {
       & logman stop   $Name -ets 2>&1 | Out-Null
       & logman delete $Name     2>&1 | Out-Null
       $larg = @('create','trace',$Name,'-o',$Etl,'-ets')
-      $provs = $script:ProvidersUsed -split ','
       if ($script:LogmanForm -eq 'flags+level') {
-        foreach ($p in $provs) { $larg += @('-p', $p, '0xFFFFFFFF', '5') }
+        $larg += @('-p', $script:ProvidersUsed, '0xFFFFFFFF', '5')
       } else {
-        foreach ($p in $provs) { $larg += @('-p', $p) }
+        $larg += @('-p', $script:ProvidersUsed)
       }
       & logman @larg 2>&1 | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "logman create trace failed (rc=$LASTEXITCODE)" }
@@ -348,19 +361,44 @@ public static class E21Native {
   }
 
   function Measure-FlushEvents {
-    param([string]$Csv)
-    $flush = 0; $srb = 0
+    param([string]$Csv, [int]$DiskNumber = -1)
+    $fbAll = 0; $fbDisk = 0; $fiDisk = 0
     $samples = New-Object System.Collections.Generic.List[string]
-    if (-not $Csv) { return [pscustomobject]@{ FlushEvents = 0; SrbFlush = 0; Samples = @() } }
+    if (-not $Csv) {
+      return [pscustomobject]@{ FbAll = 0; FbDisk = 0; FiDisk = 0; Samples = @() }
+    }
+    $diskIdx = -1
+    $first   = $true
     foreach ($line in [IO.File]::ReadLines($Csv)) {
-      $hit = $false
-      if ($line -match '(?i)flush') { $flush++; $hit = $true }
-      if ($line -match '(?i)SrbFunction' -and $line -match '(?i)(0x0?F\b|,15,|\b15\b)') { $srb++; $hit = $true }
-      if ($hit -and $samples.Count -lt 3) {
-        $samples.Add($line.Substring(0, [Math]::Min(200, $line.Length))) | Out-Null
+      if ($first) {
+        $first = $false
+        $hdr = $line -split ','
+        for ($i = 0; $i -lt $hdr.Count; $i++) {
+          if ($hdr[$i].Trim().Trim('"') -ieq 'DiskNumber') { $diskIdx = $i }
+        }
+        continue
+      }
+      if ($line -notmatch '(?i)FlushBuffers|FlushInit') { continue }
+      $isFb = $line -match '(?i)FlushBuffers'
+      $isFi = $line -match '(?i)FlushInit'
+      $dn   = -1
+      if ($diskIdx -ge 0) {
+        $cols = $line -split ','
+        if ($cols.Count -gt $diskIdx) {
+          $v = $cols[$diskIdx].Trim().Trim('"')
+          [void][int]::TryParse($v, [ref]$dn)
+        }
+      }
+      if ($isFb) {
+        $fbAll++
+        if ($DiskNumber -ge 0 -and $dn -eq $DiskNumber) { $fbDisk++ }
+      }
+      if ($isFi -and $DiskNumber -ge 0 -and $dn -eq $DiskNumber) { $fiDisk++ }
+      if ($samples.Count -lt 2 -and $isFb) {
+        $samples.Add($line.Substring(0, [Math]::Min(180, $line.Length))) | Out-Null
       }
     }
-    return [pscustomobject]@{ FlushEvents = $flush; SrbFlush = $srb; Samples = $samples.ToArray() }
+    return [pscustomobject]@{ FbAll = $fbAll; FbDisk = $fbDisk; FiDisk = $fiDisk; Samples = $samples.ToArray() }
   }
 
   # ------------------------------------------------------------------- arms
@@ -411,7 +449,7 @@ public static class E21Native {
     catch { $script:ToolErrors.Add("arm $($arm.Id) stop: " + $_.Exception.Message) | Out-Null }
 
     $csvOut = Convert-Trace -Etl $etl -Csv $csv
-    $ev     = Measure-FlushEvents -Csv $csvOut
+    $ev     = Measure-FlushEvents -Csv $csvOut -DiskNumber $diskNumber
 
     $avgMs = @{}
     foreach ($g in ($timings | Group-Object Label)) {
@@ -421,8 +459,9 @@ public static class E21Native {
     $row = [pscustomobject]@{
       Arm         = $arm.Id
       Operation   = $arm.Name
-      FlushEvents = $ev.FlushEvents
-      SrbFlush    = $ev.SrbFlush
+      FlushEvents = $ev.FbDisk
+      SrbFlush    = $ev.FiDisk
+      FbAll       = $ev.FbAll
       FileMs      = $(if ($avgMs.ContainsKey('file')) { $avgMs['file'] } else { '' })
       DirMs       = $(if ($avgMs.ContainsKey('dir'))  { $avgMs['dir'] }  else { '' })
       RootMs      = $(if ($avgMs.ContainsKey('root')) { $avgMs['root'] } else { '' })
@@ -431,8 +470,8 @@ public static class E21Native {
     }
     $results.Add($row) | Out-Null
 
-    Write-Host ("     flush-events={0}  srb-flush={1}  file={2}ms dir={3}ms root={4}ms  errors={5}" -f `
-        $row.FlushEvents, $row.SrbFlush, $row.FileMs, $row.DirMs, $row.RootMs, $row.Errors) -ForegroundColor Gray
+    Write-Host ("     ourDisk: FlushBuffers={0} FlushInit={1} (all disks: {2})  file={3}ms dir={4}ms root={5}ms  errors={6}" -f `
+        $row.FlushEvents, $row.SrbFlush, $row.FbAll, $row.FileMs, $row.DirMs, $row.RootMs, $row.Errors) -ForegroundColor Gray
     foreach ($s in $ev.Samples) { Write-Host ("     sample: " + $s) -ForegroundColor DarkGray }
   }
 
@@ -447,10 +486,26 @@ public static class E21Native {
   $cEv  = $(if ($byId.ContainsKey('C')) { $byId['C'].FlushEvents } else { 0 })
   $dEv  = $(if ($byId.ContainsKey('D')) { $byId['D'].FlushEvents } else { 0 })
 
-  if ($dSrb -gt $bSrb) {
-    $metric = 'SrbFlush'; $cDelta = $cSrb - $bSrb; $dDelta = $dSrb - $bSrb
-  } else {
-    $metric = 'FlushEvents'; $cDelta = $cEv - $bEv; $dDelta = $dEv - $bEv
+  # FlushBuffers events from the DiskIo provider ARE device-level: they are
+  # flush IRPs that reached the disk class driver.  Counting only our own
+  # physical disk keeps background flushes out.
+  $metric = 'FlushBuffers@ourDisk'
+  $cDelta = $cEv - $bEv
+  $dDelta = $dEv - $bEv
+  $level  = 'DEVICE'
+
+  # timing-based evidence (always available, independent of the tracer)
+  $timingNote = ''
+  $ratioNum = $null
+  if (($fMs -ne '') -and ($dMs -ne '') -and ([double]$fMs -gt 0)) {
+    $ratioNum = [double]$dMs / [double]$fMs
+    if ($ratioNum -lt 0.25) {
+      $timingNote = ("dir flush returned {0}x faster than the file flush - consistent with a no-op (no barrier wait)" -f [math]::Round(1 / $ratioNum, 1))
+    } elseif ($ratioNum -gt 2) {
+      $timingNote = "dir flush is slower than the file flush - it did real work"
+    } else {
+      $timingNote = "dir flush timing is comparable to the file flush - ambiguous"
+    }
   }
 
   # timing ratio (works even with no tracer at all)
@@ -469,19 +524,27 @@ public static class E21Native {
   $lines.Add(("Reps    : {0}   Tracer: {1}   Providers: {2}" -f $Reps, $script:Tracer, $script:ProvidersUsed))
   $lines.Add(("Prov avail: " + (($script:ProviderAvail.Keys | ForEach-Object { "$_=" + $script:ProviderAvail[$_] }) -join ' ')))
   $lines.Add("")
-  $lines.Add("arm  operation            flushEvents  srbFlush  fileMs  dirMs  rootMs  errors")
+  $lines.Add("arm  operation            FbOurDisk  FiOurDisk  FbAllDisks  fileMs  dirMs  rootMs  errors")
   foreach ($r in $results) {
-    $lines.Add(("{0}    {1}  {2,11}  {3,8}  {4,6}  {5,5}  {6,6}  {7,6}" -f `
-        $r.Arm, $r.Operation, $r.FlushEvents, $r.SrbFlush, $r.FileMs, $r.DirMs, $r.RootMs, $r.Errors))
+    $lines.Add(("{0}    {1}  {2,9}  {3,10}  {4,10}  {5,6}  {6,5}  {7,6}  {8,6}" -f `
+        $r.Arm, $r.Operation, $r.FlushEvents, $r.SrbFlush, $r.FbAll, $r.FileMs, $r.DirMs, $r.RootMs, $r.Errors))
   }
   $lines.Add("")
   $lines.Add(("TIMING: file flush {0} ms, dir flush {1} ms, root flush {2} ms, dir/file ratio {3}" -f $fMs, $dMs, $rMs, $ratio))
+  $lines.Add(("        " + $timingNote))
   $lines.Add("")
   $lines.Add(("DELTA vs B (flush file only), metric = {0}:" -f $metric))
   $lines.Add(("  C - B (parent directory flush) = {0}" -f $cDelta))
   $lines.Add(("  D - B (volume root flush)      = {0}   <- positive control" -f $dDelta))
   $lines.Add("")
-  if ($script:Tracer -eq 'none') {
+  if ($level -eq 'FILE' -and $bEv -eq 0 -and $cEv -eq 0 -and $dEv -eq 0) {
+    $lines.Add("VERDICT: FILE-LEVEL ONLY - no StorPort FLUSH SRB was observed, so the")
+    $lines.Add("event counts above are file-level (the call happened), NOT device-level.")
+    $lines.Add("Use the TIMING evidence:")
+    $lines.Add("  " + $timingNote)
+    $lines.Add("For a device-level answer, run with a tracer that exposes StorPort SRBs")
+    $lines.Add("(logman -p Microsoft-Windows-StorPort alone) and look for srbFlush > 0.")
+  } elseif ($script:Tracer -eq 'none') {
     $lines.Add("VERDICT: NO TRACER - ETW could not be started on this build, so there is")
     $lines.Add("no device-level evidence.  Use the TIMING line above as a weak hint only:")
     $lines.Add("a dir/file ratio well below ~0.2 suggests the directory flush returned")
