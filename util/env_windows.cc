@@ -501,20 +501,19 @@ class WindowsWritableFile : public WritableFile {
     return status;
   }
 
-  // Returns the volume mount point for the given wide path, e.g. "C:\" for
-  // "C:\db\MANIFEST-001".  Uses GetVolumePathNameW, which handles mounted
-  // folders, subst drives and UNC paths.  Falls back to extracting the
-  // drive-letter prefix if the call fails (e.g. path does not exist yet).
+  // Extracts the drive-letter prefix from a wide path, e.g. "D:\" from
+  // "D:\db\MANIFEST-001".  Does not use GetVolumePathNameW because its
+  // MinGW and MSVC declarations differ in the number of parameters, which
+  // breaks cross-platform compilation.  UNC paths (\\server\share\) and
+  // mounted folders are not handled: the function returns an empty string
+  // and the caller skips the volume-root flush (graceful degradation; the
+  // parent-directory flush above still ran).
   static std::wstring VolumeRootOf(const std::wstring& wide_path) {
-    WCHAR buf[MAX_PATH + 1] = L"";
-    DWORD len = 0;
-    if (::GetVolumePathNameW(wide_path.c_str(), buf, MAX_PATH, &len) &&
-        len > 0) {
-      return std::wstring(buf);
-    }
     size_t colon = wide_path.find(L':');
-    if (colon != std::wstring::npos && colon > 0) {
-      return wide_path.substr(0, colon + 1) + L"\\";
+    if (colon > 0 && colon != std::wstring::npos &&
+        colon + 1 < wide_path.size() &&
+        wide_path[colon + 1] == L'\\') {
+      return wide_path.substr(0, colon + 2);
     }
     return L"";
   }
