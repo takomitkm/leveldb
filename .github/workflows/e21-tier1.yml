@@ -1,0 +1,50 @@
+name: e21-tier1-flush-trace
+
+# E21 Tier-1: does FlushFileBuffers(parent dir) emit a flush to the storage
+# stack, compared with FlushFileBuffers(volume root)?
+# Runs on a real Windows kernel (GitHub-hosted VM, admin by default); no
+# power cut, ~2 minutes.  Artifacts: report + transcript + per-arm CSV.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e21-tier1.yml'
+      - 'docs/powercut/run-tier1.ps1'
+
+jobs:
+  tier1:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk |
+            Select-Object DeviceID, FileSystem, DriveType,
+              @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} |
+            Format-Table | Out-String | Write-Host
+
+      - name: Run Tier-1 flush trace on D:
+        shell: pwsh
+        run: |
+          & ./docs/powercut/run-tier1.ps1 -Volume D: -NoPause -NoElevate -TraceLevel 5 -Reps 5
+          $code = $LASTEXITCODE
+          Write-Host "script exit code: $code"
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e21-tier1-${{ github.run_id }}
+          path: |
+            docs/powercut/tier1-report-*.txt
+            docs/powercut/tier1-log-*.txt
+            docs/powercut/e21-*.csv
+          if-no-files-found: warn
