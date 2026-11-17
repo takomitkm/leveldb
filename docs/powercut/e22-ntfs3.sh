@@ -66,7 +66,9 @@ run_arm() {  # $1 = arm (0 fsync-file, 1 +fsync-dir, 2 teeth)
   LL=$(sudo losetup -f --show a$A-log.img)
   SZ=$(sudo blockdev --getsz "$LD")
   sudo dmsetup remove e22dev 2>/dev/null
-  sudo dmsetup create e22dev --table "0 $SZ log-writes $LD $LL" || { echo DM-CREATE-FAIL; return 1; }
+  # dm-log-writes constructor is <log_device> <data_device> - log FIRST
+  sudo dmsetup create e22dev --table "0 $SZ log-writes $LL $LD" || { echo DM-CREATE-FAIL; return 1; }
+  echo "dm table: $(sudo dmsetup table e22dev | head -1)" 
   sudo mkfs.ntfs -F -q -L E22 /dev/mapper/e22dev || { echo MKFS-FAIL; return 1; }
   sudo mkdir -p /mnt/e22a
   sudo mount -t ntfs3 /dev/mapper/e22dev /mnt/e22a || { echo MOUNT-NTFS3-FAIL; sudo dmsetup remove e22dev; return 1; }
@@ -75,6 +77,9 @@ run_arm() {  # $1 = arm (0 fsync-file, 1 +fsync-dir, 2 teeth)
   sudo umount /mnt/e22a
   sudo dmsetup remove e22dev
   sudo losetup -d "$LD" "$LL"
+  echo "-- image fingerprints (first 8 bytes) --"
+  echo "data-img: $(od -A n -t x1 -N 8 a$A-data.img | tr -s ' ')"
+  echo "log-img : $(od -A n -t x1 -N 8 a$A-log.img | tr -s ' ')"
   echo "-- replay + autopsy --"
   python3 "$W/e22_replay.py" "$S/a$A-data.img" "$S/a$A-log.img" "$S/a$A"
 }
