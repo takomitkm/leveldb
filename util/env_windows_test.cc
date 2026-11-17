@@ -568,7 +568,8 @@ TEST_F(EnvWindowsTest, ManifestSyncRestrictedDirectory) {
     std::string value;
     ASSERT_LEVELDB_OK(db->Get(ReadOptions(), "restricted", &value));
     ASSERT_EQ("value", value);
-    ASSERT_LEVELDB_OK(db->CompactRange(nullptr, nullptr));
+    // CompactRange returns void in this leveldb, unlike RocksDB's Status.
+    db->CompactRange(nullptr, nullptr);
     delete db;
 
     ASSERT_LEVELDB_OK(DB::Open(options, db_dir, &db));
