@@ -239,6 +239,51 @@ static void MakeD16(const char* dir, const char* root) {
   FlushDirShape(root, &oe, &fe);
 }
 
+/* ---- native NT flush experiments (arms 20-24) ----
+ * Win32 FlushFileBuffers is a thin wrapper over ntdll!NtFlushBuffersFile, so
+ * "skipping Win32" for the base call is a no-op by construction (arm 20
+ * documents this).  The unknown is ntdll!NtFlushBuffersFileEx (Win8+, not
+ * wrapped by any Win32 API): it takes flush flags / an opaque context that
+ * may select a volume-wide or write-through flush — plausibly where
+ * MS-FSA 2.1.5.7 <80> really lives.  Both are resolved dynamically. */
+typedef LONG NTSTATUS;
+typedef struct _NT_IO_STATUS_BLOCK {
+  union { NTSTATUS Status; PVOID Pointer; } S;
+  ULONG_PTR Information;
+} NT_IOSB;
+
+typedef NTSTATUS (NTAPI *pNtFlushBuffersFile)(HANDLE, NT_IOSB*);
+typedef NTSTATUS (NTAPI *pNtFlushBuffersFileEx)(HANDLE, PVOID, ULONG, NT_IOSB*, ULONG);
+
+static pNtFlushBuffersFile g_NtFlush = nullptr;
+static pNtFlushBuffersFileEx g_NtFlushEx = nullptr;
+
+static void LoadNt(void) {
+  HMODULE ntd = GetModuleHandleA("ntdll.dll");
+  if (!ntd) return;
+  g_NtFlush = (pNtFlushBuffersFile)GetProcAddress(ntd, "NtFlushBuffersFile");
+  g_NtFlushEx = (pNtFlushBuffersFileEx)GetProcAddress(ntd, "NtFlushBuffersFileEx");
+}
+
+/* variant 0: NtFlushBuffersFile (baseline == Win32); 1: Ex FLUSH_AND_PURGE
+ * (24H2) on dir; 2: NtFlushBuffersFile on the VOLUME object; 3: Ex
+ * FLUSH_AND_PURGE on the volume object.  Flags/params per phnt ntioapi.h:
+ *   NtFlushBuffersFileEx(HANDLE, ULONG Flags, PVOID Parameters,
+ *                        ULONG ParametersSize, PIO_STATUS_BLOCK)
+ *   FLUSH_FLAGS_FILE_NORMAL 0 / FILE_DATA_ONLY 1 / NO_SYNC 2 /
+ *   FILE_DATA_SYNC_ONLY 4 (RS1+) / FLUSH_AND_PURGE 8 (24H2) */
+static NTSTATUS NtFlushVariant(HANDLE h, int variant) {
+  NT_IOSB iosb;
+  memset(&iosb, 0, sizeof iosb);
+  if (variant == 0 || variant == 2) {
+    if (!g_NtFlush) return (NTSTATUS)0xC0000001;
+    return g_NtFlush(h, &iosb);
+  }
+  if (!g_NtFlushEx) return (NTSTATUS)0xC0000002;
+  ULONG flags = (variant == 1 || variant == 3) ? 8 : 0;  /* FLUSH_AND_PURGE */
+  return g_NtFlushEx(h, flags, nullptr, 0, &iosb);
+}
+
 static int RunArm(int arm, int rep, const char* dir, char* note) {  char path[96], src[96], dst[96], deldir[96], body[64], root[8];
   DWORD oe = 0, fe = 0;
   snprintf(root, sizeof root, "%c:\\", g_vol);
@@ -476,6 +521,47 @@ static int RunArm(int arm, int rep, const char* dir, char* note) {  char path[96
     if (!FlushDirShape(root, &oe, &fe)) return 117;
     return 0;
   }
+  case 20: case 21: case 22: case 23: {
+    /* native NT flush matrix (create+flushfile first, identical to arm 1
+     * otherwise):
+     *   20 NtFlushBuffersFile on the PARENT DIR  (baseline == Win32)
+     *   21 NtFlushBuffersFileEx(FLUSH_AND_PURGE) on the PARENT DIR (24H2)
+     *   22 NtFlushBuffersFile on the VOLUME OBJECT \\.\<vol>
+     *   23 NtFlushBuffersFileEx(FLUSH_AND_PURGE) on the VOLUME OBJECT
+     * Verdict per arm: a2X_rN.bin on platter + ntstatus in the DONE marker. */
+    int variant = arm - 20;
+    snprintf(path, sizeof path, "%s\\a%d_r%d.bin", dir, arm, rep);
+    snprintf(body, sizeof body, "e17-a%d-r%d", arm, rep);
+    if (!WritePadded(path, body, TRUE)) return (int)GetLastError();
+    if (arm >= 22) {
+      wchar_t volp[16];
+      volp[0] = L'\\'; volp[1] = L'\\'; volp[2] = L'.'; volp[3] = L'\\';
+      volp[4] = (wchar_t)g_vol; volp[5] = L':'; volp[6] = 0;
+      HANDLE v = CreateFileW(volp, GENERIC_READ | GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_EXISTING, 0, nullptr);
+      if (v == INVALID_HANDLE_VALUE) {
+        snprintf(note, 128, "vol-open err=%lu", (unsigned long)GetLastError());
+        return 0;
+      }
+      NTSTATUS st = NtFlushVariant(v, variant);
+      CloseHandle(v);
+      snprintf(note, 128, "vol ntstatus=0x%08lX variant=%d",
+               (unsigned long)st, variant);
+      return 0;
+    }
+    wchar_t wdir[512];
+    MultiByteToWideChar(CP_UTF8, 0, dir, -1, wdir, 512);
+    HANDLE d = CreateFileW(wdir, GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (d == INVALID_HANDLE_VALUE) return (int)GetLastError();
+    NTSTATUS st = NtFlushVariant(d, variant);
+    CloseHandle(d);
+    snprintf(note, 128, "ntstatus=0x%08lX variant=%d",
+             (unsigned long)st, variant);
+    return 0;
+  }
   case 90: {  /* INSTALLER (maintenance boot): copy SELF (the exe inside the
                * PE ramdisk, X:\e13pe.exe) to the full-Windows OS volume's
                * \e14\e14pe3.exe so the golden image's ONSTART task runs the
@@ -527,6 +613,7 @@ int main(void) {
   if (ReadArmFromSmbios(&arm, &reps)) how = 'S';
   else if (ReadArmFromFile(&arm, &reps)) how = 'F';
   if (arm < 0) Park();
+  LoadNt();
 
   char dir[32];
   snprintf(dir, sizeof dir, "%c:\\e14", g_vol);

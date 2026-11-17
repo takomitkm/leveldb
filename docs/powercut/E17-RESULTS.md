@@ -101,6 +101,29 @@ MFT 区（<8MiB）写入按轮窗口计数。探针源码 `e17pe.cpp`（16 臂�
     镜像的 ntfs-3g RW 重放挂载在 unclean 警告后失败（WinPE 镜像可重放）——RO,norecover
     的裸盘判定不受影响，且 worst/best 双切点一致；RW 失败如实记录为 caveat。
 
+3c. **原生 NT 实验没有藏更强的目录 flush（臂 20-23，WinPE + W10 双栈一致）**。用户问
+   "跳过 Win32 直接用 NT API 行不行"：Win32 `FlushFileBuffers` 本来就是
+   `ntdll!NtFlushBuffersFile` 的薄包装（臂 20 baseline 确认同款空操作，STATUS_SUCCESS
+   零设备写入）。真正没被任何 Win32 API 包装的是 **`NtFlushBuffersFileEx`**（Win8+，
+   phnt 签名 `(HANDLE, ULONG Flags, PVOID Parameters, ULONG ParametersSize, PIO_STATUS_BLOCK)`，
+   常量 `FLUSH_FLAGS_FILE_NORMAL 0 / FILE_DATA_ONLY 1 / NO_SYNC 2 / FILE_DATA_SYNC_ONLY 4
+   (RS1+) / FLUSH_AND_PURGE 8 (24H2)`）。实测矩阵（每臂 create+刷文件+变体刷，NTSTATUS
+   记进 DONE marker）：
+
+   | 臂 | 变体 | 目标句柄 | NTSTATUS（两栈一致） | 文件上盘 |
+   |---|---|---|---|---|
+   | 20 | NtFlushBuffersFile（baseline） | 父目录 | 0x00000000（成功=空操作） | 否 |
+   | 21 | Ex(FLUSH_AND_PURGE=8) | 父目录 | 0xC000000D（19041/19045 拒，24H2 特性） | 否 |
+   | 22 | NtFlushBuffersFile | **卷对象 `\\.\D:`** | 0xC000000D | 否 |
+   | 23 | Ex(FLUSH_AND_PURGE) | 卷对象 | 0xC000000D | 否 |
+
+   两个附带发现：①卷对象 `\\.\D:`（数据卷）**非管理员可打开**（两栈一致，无 vol-open
+   错误）——被拒的是 flush 调用本身（STATUS_INVALID_PARAMETER），即 ntfs.sys 的
+   FlushBuffers 路径不接受卷设备对象（至少这两个内核版本/非管理员场景）；②其余
+   FLUSH_FLAGS 都是**弱化**项（跳元数据提交或跳设备 SYNC），没有比 flags=0 更强的
+   目录语义。=> **在被测栈上，非管理员能触达卷级刷的用户态接口只有根目录句柄**；
+   NT 层没有藏"真目录 flush"。
+
 4. **对本系列 12 个 PR 的直接含义**：这些补丁当前形状（刷父目录）在这套栈上不提供设备级
    耐久——要落地真耐久需要把 flush 对象改为**卷根**（或在父目录刷后追加一次卷根刷），
    或者如实把补丁降级为"行为对齐 POSIX、耐久性未证"。真机（NVMe/Win11/ReFS）上的
