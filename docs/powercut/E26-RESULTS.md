@@ -11,8 +11,8 @@ harness, interleaved rounds, deltas only (runner storage is shared noise).
 | E26a leveldb | takomitkm/leveldb `bench-e26`, workflow `e26-leveldb.yml` | green |
 | E26b restic | takomitkm/restic `bench-e26`, `e26-restic.yml` | green |
 | E26c pebble | takomitkm/pebble `bench-e26`, `e26-pebble.yml` | green |
-| E26d kit | takomitkm/kit `bench-e26`, `e26-kit.yml` | green (below) |
-| E26e rocksdb | takomitkm/rocksdb `bench-e26`, `e26-rocksdb.yml` (matrix) | green (below) |
+| E26d kit | harness on takomitkm/leveldb `bench-e26`, `e26-kit-via-leveldb.yml` (kit fork Actions disabled by GitHub) | green (below) |
+| E26e rocksdb | matrix on takomitkm/leveldb `bench-e26`, `e26-rocksdb-via-leveldb.yml` (rocksdb fork Actions disabled) | green (below) |
 | E26f MySQL | sim on takomitkm/leveldb `bench-e26`, `e26-mysql-sim.yml` | green (below) |
 | E26g PG | school machine, probe `t_dirsync_root.c`/`t_rootcost.c` | done (below) |
 
@@ -70,34 +70,71 @@ base = cockroachdb/pebble a995e890 / dironly = 1e285158 / dirroot =
   see much less accumulation; the monotone growth is the upper-bound
   shape.
 
-## E26d kit (real resilient_fs × 3 variants, 200 syncs + 200 create/remove cycles)
+## E26d kit (real backend.rs × 3 variants, `Backend::sync_directory` timed)
 
 base = speakeasy-api/kit 247e5c3 / dironly = e02b019 / dirroot = 669d3a4a.
-The bench counts errors instead of unwrapping, which produced a finding on
-its own: **upstream kit's `sync_directory` fails outright on Windows**
-(`FlushFileBuffers` through its read-only handle → OS error 1 "Incorrect
-function", all 200 calls), i.e. upstream Windows does not just skip the
-flush — its API errors. Patched variants:
+The kit crate's own test target has pre-existing Unix-only gateway code that
+does not compile on Windows (declared on PR #345), so this follows the PR's
+own `windows-sync-check` pattern: each branch's real
+`src/resilient_fs/backend.rs` is compiled next to a tiny bench main (deps:
+zeroize + getrandom) and `Backend::sync_directory` — the Windows dir-flush /
+root-flush site — is called 200× per variant, 3 interleaved rounds, on
+`D:\e26kit-*`. The takomitkm/kit fork's Actions turned out to be disabled by
+GitHub mid-run ("Actions has been disabled for this repository"; dispatch
+422), so the workflow was relocated to the leveldb fork (run 44440309435).
 
-| variant | phaseA ok/err | phaseB ok/err |
+| variant | ms/call (3 rounds) | ok/err |
 |---|---|---|
-| base | 0/200 (every call errors) | errors propagate |
-| dironly (dir flush + pins) | 200/200 | 200/200 |
-| dirroot (head, + volume root) | 200/200 | 200/200 |
+| base (upstream main) | 0.0305 / 0.0305 / 0.0302 | 200/200 — the upstream Windows path returns success quickly (no real flush) |
+| dironly (dir flush + pins) | 0.0715 / 0.0716 / 0.0740 | 200/200 |
+| dirroot (head, + volume root) | 0.0837–0.1172 (per-call time of the failing calls) | **0/200, `os error 32` (ERROR_SHARING_VIOLATION) ×3 rounds** |
 
-(Per-call timings for dironly/dirroot are in the run log; the structural
-result is that the patch family turns a failing upstream API into a
-working one at the same call rate, with the root flush priced as in the
-other engines.)
+- dironly costs **≈+41 µs/call** over upstream — the parent-directory
+  `FlushFileBuffers`, same order as the E21 single-call numbers.
+- **dirroot fails 100% on the runner**: opening `D:\` for the root flush
+  without `FILE_SHARE_DELETE` collides with a handle the runner's own
+  workspace volume already holds (`ERROR_SHARING_VIOLATION`), and the
+  failure propagates through `sync_directory`. The other engines' root
+  flushes (leveldb/pebble/rocksdb/MySQL) all open the root with
+  `FILE_SHARE_READ|WRITE|DELETE` and never hit this. This is a real defect
+  in the current PR #345 head, not a benchmark artifact — the 11-18 review
+  already pinned the *ordering* of the root flush vs the ancestor pins
+  (`volume_root_flush_precedes_ancestor_pins`); this adds the missing
+  *sharing* bit. Fix: add `FILE_SHARE_DELETE` to the root open in
+  `sync_directory` (one line), then re-verify on a non-elevated machine.
+- The earlier "upstream errors outright with os error 1" observation came
+  from the full-crate harness (Fs layer on the runner); the backend-layer
+  harness shows upstream succeeding but doing no durable work (30 µs is an
+  open+close, not a flush).
 
 ## E26e RocksDB (real `db_bench` × 3 WinDirectory::Fsync variants, fillrandom)
 
 base = meta/rocksdb 96cf38d4 (no-op Fsync) / dironly = 56cd0059 / dirroot =
-ed8b043a. 40 MiB fillrandom, 128 KiB write buffer, auto-compactions off →
-every memtable flush creates an SST and syncs its directory. Results land
-in the run logs; build note: `-DWARNINGS_AS_ERRORS=0` is required on the
-current runner image (newer MSVC turns a ribbon_impl.h warning into C2220
-in all three variants otherwise).
+ed8b043a. 400k keys × 100 B, 128 KiB write buffer, auto-compactions off →
+every memtable flush creates an SST and syncs its directory. 2 rounds per
+variant, matrix jobs on the leveldb fork (run 44437046101; the RocksDB
+fork's Actions is disabled by GitHub, same as kit's):
+
+| variant | µs/op r1/r2 | ops/s r1/r2 |
+|---|---|---|
+| base (no-op Fsync) | 4.544 / 5.737 | 220k / 174k |
+| dironly (dir flush) | 2.728 / 3.019 | 367k / 331k |
+| dirroot (+ volume root) | **17.237 / 19.002** | **58k / 53k** |
+
+- dirroot is **3.4–6.3× base** on the same workload — the per-flush root
+  price of ≈13–15 µs/op on this small-write workload.
+- dironly measuring *faster* than base is directionally wrong and is
+  flagged as runner noise/ordering (no interleaving across variants was
+  possible in the matrix layout); the only robust cross-variant signal is
+  base/dironly ≪ dirroot.
+- Build notes (learned the hard way): current runner MSVC turns a
+  pre-existing C4723 (ribbon_impl.h) and C4244 (db_bench_tool.cc) into
+  errors → `/wd4723 /wd4244` + `-DWARNINGS_AS_ERRORS=0`; db_bench without
+  gflags starts, prints nothing and exits 1, and thirdparty.inc reads
+  `GFLAGS_INCLUDE` / `GFLAGS_LIB_RELEASE` from the *environment* expecting
+  a 2014 NuGet layout (`lib/native/retail/amd64`) → vcpkg's gflags is
+  staged into that layout; `--compression_type=none` is required (Snappy
+  not linked) and `gflags.dll` must sit next to `db_bench.exe`.
 
 ## E26f MySQL-shaped sim (server build out of CI budget — explicit simulation)
 
@@ -143,13 +180,17 @@ access-mask sweep). Findings:
 | LMDB (E25) | +0.2–0.4/env | +2.5–3 ms per fresh env | env_open/copy |
 | restic | free | +38 ms/backup (+4%) | per saved file |
 | pebble | free | +22–31 ms/flush (grows with dirty L0) | per Flush() |
-| kit | turns upstream's failing API into working one; root priced as elsewhere | | per sync_directory |
+| RocksDB | free (noise says maybe negative — treat as free) | +13–15 µs/op, 3.4–6.3× base | per memtable flush / dir sync |
+| kit | +41 µs/call | **err32 ×200 on the runner — root open lacks FILE_SHARE_DELETE (defect in PR #345 head)** | per sync_directory |
 | MySQL (sim) | +0.07–0.15 ms/op | +1.3–1.6 ms/op | per create/delete/rename |
 | PG | 530–559 µs | skipped (root ACL) or volume-dirty-dependent | per durable_rename/unlink |
 
-The one-sentence takeaway stands across all seven engines: **the
+The one-sentence takeaway stands across all nine engines: **the
 parent-directory flush is free because it does no work; the volume-root
 flush costs whatever metadata the volume has dirty — single-digit ms on an
 idle runner volume, tens-to-hundreds of ms on a busy one — and the patch
 family's engines pay it at wildly different rates (per MB, per txn, per
-env, per file, per op).**
+env, per file, per op).** Two operational findings came out of the rigs
+themselves: kit's root open needs `FILE_SHARE_DELETE` (100% failure on the
+runner otherwise), and GitHub disables Actions on inactive forks (kit's
+and RocksDB's mid-run; rigs were relocated to the leveldb fork).
