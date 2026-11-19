@@ -70,42 +70,34 @@ base = cockroachdb/pebble a995e890 / dironly = 1e285158 / dirroot =
   see much less accumulation; the monotone growth is the upper-bound
   shape.
 
-## E26d kit (real backend.rs × 3 variants, `Backend::sync_directory` timed)
+## E26d kit (real backend.rs × variants, `Backend::sync_directory` timed)
 
-base = speakeasy-api/kit 247e5c3 / dironly = e02b019 / dirroot = 669d3a4a.
-The kit crate's own test target has pre-existing Unix-only gateway code that
-does not compile on Windows (declared on PR #345), so this follows the PR's
-own `windows-sync-check` pattern: each branch's real
-`src/resilient_fs/backend.rs` is compiled next to a tiny bench main (deps:
-zeroize + getrandom) and `Backend::sync_directory` — the Windows dir-flush /
-root-flush site — is called 200× per variant, 3 interleaved rounds, on
-`D:\e26kit-*`. The takomitkm/kit fork's Actions turned out to be disabled by
-GitHub mid-run ("Actions has been disabled for this repository"; dispatch
-422), so the workflow was relocated to the leveldb fork (run 44440309435).
+base = speakeasy-api/kit 247e5c3 / dironly = e02b019 / dirroot = **8488ca5a
+(PR #345 current head)**. The kit crate's own test target has pre-existing
+Unix-only gateway code that does not compile on Windows (declared on PR
+#345), so this follows the PR's own `windows-sync-check` pattern: each
+branch's real `src/resilient_fs/backend.rs` is compiled next to a tiny
+bench main (deps: zeroize + getrandom) and `Backend::sync_directory` —
+the Windows dir-flush / root-flush site — is called 200× per variant, 3
+interleaved rounds, on `D:\\e26kit-*`. The takomitkm/kit fork's Actions is
+disabled by GitHub, so the workflow runs from the leveldb fork (run
+44441171370).
 
 | variant | ms/call (3 rounds) | ok/err |
 |---|---|---|
-| base (upstream main) | 0.0305 / 0.0305 / 0.0302 | 200/200 — the upstream Windows path returns success quickly (no real flush) |
-| dironly (dir flush + pins) | 0.0715 / 0.0716 / 0.0740 | 200/200 |
-| dirroot (head, + volume root) | 0.0837–0.1172 (per-call time of the failing calls) | **0/200, `os error 32` (ERROR_SHARING_VIOLATION) ×3 rounds** |
+| base (upstream main) | 0.0305 / 0.0305 / 0.0305 | 200/200 — upstream Windows path returns success in ≈30 µs (no real flush) |
+| dironly (dir flush + pins) | 0.0733 / 0.0738 / 0.0746 | 200/200 — **+43 µs/call**, the parent-directory FlushFileBuffers |
+| dirroot (head, + volume root) | **4.49 / 4.88 / 4.49** | 200/200 — **≈4.5 ms/call**, the volume-root flush |
 
-- dironly costs **≈+41 µs/call** over upstream — the parent-directory
-  `FlushFileBuffers`, same order as the E21 single-call numbers.
-- **dirroot fails 100% on the runner**: opening `D:\` for the root flush
-  without `FILE_SHARE_DELETE` collides with a handle the runner's own
-  workspace volume already holds (`ERROR_SHARING_VIOLATION`), and the
-  failure propagates through `sync_directory`. The other engines' root
-  flushes (leveldb/pebble/rocksdb/MySQL) all open the root with
-  `FILE_SHARE_READ|WRITE|DELETE` and never hit this. This is a real defect
-  in the current PR #345 head, not a benchmark artifact — the 11-18 review
-  already pinned the *ordering* of the root flush vs the ancestor pins
-  (`volume_root_flush_precedes_ancestor_pins`); this adds the missing
-  *sharing* bit. Fix: add `FILE_SHARE_DELETE` to the root open in
-  `sync_directory` (one line), then re-verify on a non-elevated machine.
-- The earlier "upstream errors outright with os error 1" observation came
-  from the full-crate harness (Fs layer on the runner); the backend-layer
-  harness shows upstream succeeding but doing no durable work (30 µs is an
-  open+close, not a flush).
+- The root flush dominates: **≈4.5 ms/call vs 0.073 ms for the dir flush**
+  — same order as E21's single-call 3.8–4.3 ms, and consistent with the
+  "root flush costs whatever the volume has dirty" law.
+- **An earlier variant (669d3a4a, the pre-11-19 head) failed 200/200 with
+  ERROR_SHARING_VIOLATION** because its root open used GENERIC_WRITE
+  without FILE_SHARE_DELETE; the current head (8488ca5a) opens the root
+  with FILE_APPEND_DATA and runs the root flush before the ancestor pins,
+  and measures clean. Recorded so the defect is not re-attributed to the
+  current patch.
 
 ## E26e RocksDB (real `db_bench` × 3 WinDirectory::Fsync variants, fillrandom)
 
@@ -181,7 +173,7 @@ access-mask sweep). Findings:
 | restic | free | +38 ms/backup (+4%) | per saved file |
 | pebble | free | +22–31 ms/flush (grows with dirty L0) | per Flush() |
 | RocksDB | free (noise says maybe negative — treat as free) | +13–15 µs/op, 3.4–6.3× base | per memtable flush / dir sync |
-| kit | +41 µs/call | **err32 ×200 on the runner — root open lacks FILE_SHARE_DELETE (defect in PR #345 head)** | per sync_directory |
+| kit | +43 µs/call | **≈4.5 ms/call** (head 8488ca5a, 200/200 clean; the older 669d3a4a errored 200/200 with err32 — fixed by the FILE_APPEND_DATA + ordering commits) | per sync_directory |
 | MySQL (sim) | +0.07–0.15 ms/op | +1.3–1.6 ms/op | per create/delete/rename |
 | PG | 530–559 µs | skipped (root ACL) or volume-dirty-dependent | per durable_rename/unlink |
 
@@ -191,6 +183,7 @@ flush costs whatever metadata the volume has dirty — single-digit ms on an
 idle runner volume, tens-to-hundreds of ms on a busy one — and the patch
 family's engines pay it at wildly different rates (per MB, per txn, per
 env, per file, per op).** Two operational findings came out of the rigs
-themselves: kit's root open needs `FILE_SHARE_DELETE` (100% failure on the
-runner otherwise), and GitHub disables Actions on inactive forks (kit's
-and RocksDB's mid-run; rigs were relocated to the leveldb fork).
+themselves: GitHub disables Actions on inactive forks (kit's and
+RocksDB's mid-run; rigs were relocated to the leveldb fork), and the kit
+root-open defect found on the superseded 669d3a4a variant (err32 without
+FILE_SHARE_DELETE) is already fixed on the current head.
