@@ -155,7 +155,7 @@ public static class E27Native {
   }
 
   function Nt-Create-Relative {
-    param([IntPtr]$Root, [string]$Name, [uint32]$Access, [uint32]$Disposition, [uint32]$Options)
+    param([IntPtr]$Root, [string]$Name, [uint32]$Access, [uint32]$Disposition, [uint32]$Options, [uint32]$Share = 0)
     $buf = New-UnicodeBuffer $Name
     try {
       $us = New-Object E27Native+UnicodeString
@@ -173,7 +173,7 @@ public static class E27Native {
       $oa.SecurityQualityOfService = [IntPtr]::Zero
       $handle = [IntPtr]::Zero
       $ios = New-Object E27Native+IoStatusBlock
-      $st = [E27Native]::NtCreateFile([ref]$handle, $Access, [ref]$oa, [ref]$ios, [IntPtr]::Zero, 0, 0, $Disposition, $Options, [IntPtr]::Zero, 0)
+      $st = [E27Native]::NtCreateFile([ref]$handle, $Access, [ref]$oa, [ref]$ios, [IntPtr]::Zero, 0, $Share, $Disposition, $Options, [IntPtr]::Zero, 0)
       if (-not (NT-Success $st)) { throw "NtCreateFile($Name) status=$('0x{0:X8}' -f $st) dos=$(NT-Err $st)" }
       return $handle
     } finally {
@@ -254,6 +254,7 @@ public static class E27Native {
   $arms = @('A','B','C','D','E','F','G')
   if ($RightKitExe -and (Test-Path $RightKitExe)) { $arms += 'H' }
   $results = New-Object System.Collections.Generic.List[object]
+  $debugErrors = @{}
 
   foreach ($arm in $arms) {
     $armDir = Join-Path $script:WorkDir $arm
@@ -275,14 +276,14 @@ public static class E27Native {
       if ($arm -eq 'C') { try { $dirH = Open-Directory $armDir } catch { $errors.Add($_.Exception.Message) | Out-Null } }
       if ($arm -eq 'D') { try { $rootH = Open-Directory ($Volume + '\') } catch { $errors.Add($_.Exception.Message) | Out-Null } }
     } else {
-      $setupRoot = [E27Native]::CreateFileW($armDir, $GENERIC_WRITE, $SHARE_ALL, [IntPtr]::Zero, $OPEN_EXISTING, $FLAG_BACKUP_SEM, [IntPtr]::Zero)
+      $setupRoot = [E27Native]::CreateFileW($armDir, ($GENERIC_WRITE -bor $READ_ATTRIBUTES -bor $SYNCHRONIZE), $SHARE_ALL, [IntPtr]::Zero, $OPEN_EXISTING, $FLAG_BACKUP_SEM, [IntPtr]::Zero)
       if ($setupRoot.ToInt64() -eq -1) { throw "Cannot open root for arm $arm err=$(Get-Win32Err)" }
       if ($arm -eq 'E') {
         # Pre-create target names to avoid status pollution? No: creation is measured, so nothing here.
       } elseif ($arm -in @('F','G')) {
         for ($r=0; $r -lt $Reps; $r++) {
           try {
-            $h = Nt-Create-Relative $setupRoot ("src_$r") $GENERIC_WRITE $FILE_CREATE ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT)
+            $h = Nt-Create-Relative $setupRoot ("src_$r") ($GENERIC_WRITE -bor $SYNCHRONIZE) $FILE_CREATE ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT) 3
             [void][E27Native]::CloseHandle($h)
           } catch { $errors.Add($_.Exception.Message) | Out-Null }
         }
@@ -301,7 +302,7 @@ public static class E27Native {
         'D' { if ($r -lt $handles.Count) { $timings.Add((Measure-Flush $handles[$r])) | Out-Null }; if ($rootH) { $timings.Add((Measure-Flush $rootH)) | Out-Null } }
         'E' {
           try {
-            $h = Nt-Create-Relative $setupRoot ("e27e_$r") $GENERIC_WRITE $FILE_CREATE ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT)
+            $h = Nt-Create-Relative $setupRoot ("e27e_$r") ($GENERIC_WRITE -bor $SYNCHRONIZE) $FILE_CREATE ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT) 3
             $buf = [Text.Encoding]::ASCII.GetBytes(('E' * 2048)); $written=0
             [void][E27Native]::WriteFile($h, $buf, $buf.Length, [ref]$written, [IntPtr]::Zero)
             [void][E27Native]::CloseHandle($h)
@@ -309,14 +310,14 @@ public static class E27Native {
         }
         'F' {
           try {
-            $src = Nt-Create-Relative $setupRoot ("src_$r") ($DELETE_ACCESS -bor $SYNCHRONIZE) $FILE_OPEN ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT)
+            $src = Nt-Create-Relative $setupRoot ("src_$r") ($DELETE_ACCESS -bor $SYNCHRONIZE) $FILE_OPEN ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT) 3
             Nt-Rename-Relative $setupRoot $src ("dst_$r")
             [void][E27Native]::CloseHandle($src)
           } catch { $errors.Add($_.Exception.Message) | Out-Null }
         }
         'G' {
           try {
-            $tgt = Nt-Create-Relative $setupRoot ("src_$r") ($DELETE_ACCESS -bor $SYNCHRONIZE) $FILE_OPEN ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT)
+            $tgt = Nt-Create-Relative $setupRoot ("src_$r") ($DELETE_ACCESS -bor $SYNCHRONIZE) $FILE_OPEN ($FILE_NON_DIRECTORY_FILE -bor $FILE_WRITE_THROUGH -bor $FILE_SYNCHRONOUS_IO_NONALERT) 3
             Set-Disposition $tgt
             [void][E27Native]::CloseHandle($tgt)
           } catch { $errors.Add($_.Exception.Message) | Out-Null }
@@ -340,6 +341,7 @@ public static class E27Native {
     $csvOut = Convert-Trace $etl $csv
     $ev = Count-Events $csvOut
     $avg = if ($timings.Count) { [math]::Round((($timings | Measure-Object Ms -Average).Average),3) } else { '' }
+    $debugErrors[$arm] = @($errors.ToArray())
     $row = [pscustomobject]@{ Arm=$arm; Writes=$ev.Writes; Flushes=$ev.Flushes; AvgMs=$avg; Errors=$errors.Count; Csv=$(if ($csvOut) { Split-Path -Leaf $csvOut } else { '' }) }
     $results.Add($row) | Out-Null
     Write-Host ("     writes={0} flushes={1} avgMs={2} errors={3}" -f $row.Writes,$row.Flushes,$row.AvgMs,$row.Errors)
