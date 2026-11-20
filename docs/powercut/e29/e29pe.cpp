@@ -82,7 +82,11 @@ static int RunRightkit(int arm, int rep, const char* dir, char* note) {
   char cmdline[512];
   char target[160];
   snprintf(target, sizeof target, "%s\\rk_%d", dir, rep);
-  snprintf(cmdline, sizeof cmdline, "%s \"%s\"", exe, target);
+  char exepath[512];
+  GetModuleFileNameA(nullptr, exepath, sizeof exepath);
+  char* slash = strrchr(exepath, '\');
+  if (slash) *(slash + 1) = 0; else strcpy(exepath, "X:\\");
+  snprintf(cmdline, sizeof cmdline, "\"%s%s\" \"%s\"", exepath, exe, target);
   STARTUPINFOA si; ZeroMemory(&si, sizeof si); si.cb = sizeof si;
   PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof pi);
   BOOL ok = CreateProcessA(nullptr, cmdline, nullptr, nullptr, FALSE,
