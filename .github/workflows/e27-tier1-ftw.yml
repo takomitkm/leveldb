@@ -1,0 +1,52 @@
+name: e27-tier1-ftw
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e27-tier1-ftw.yml'
+      - 'docs/powercut/e27/**'
+
+jobs:
+  e27:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, FileSystem, DriveType, @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} | Format-Table | Out-String | Write-Host
+
+      - name: Build minimal rightkit consumer (unmodified dependency)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e27'
+          cargo build --release --manifest-path (Join-Path $dir 'Cargo.toml') --target x86_64-pc-windows-msvc
+          $exe = Join-Path $dir 'target/x86_64-pc-windows-msvc/release/e27-rightkit.exe'
+          if (-not (Test-Path $exe)) { throw "rightkit consumer exe not found: $exe" }
+          Write-Host "RIGHTKIT_EXE=$exe"
+
+      - name: Run E27 ETW arms
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e27'
+          $exe = Join-Path $dir 'target/x86_64-pc-windows-msvc/release/e27-rightkit.exe'
+          & (Join-Path $dir 'run-e27.ps1') -Volume D: -Reps 100 -NoPause -RightKitExe $exe
+          $code = $LASTEXITCODE
+          Write-Host "E27 script exit: $code"
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e27-tier1-${{ github.run_id }}
+          path: |
+            docs/powercut/e27/e27-report-*.txt
+            docs/powercut/e27/e27-log-*.txt
+            docs/powercut/e27/e27-*.csv
+          if-no-files-found: warn
