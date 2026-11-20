@@ -5,3 +5,7 @@ edition = "2021"
 
 [dependencies]
 rightkit_fs = { package = "ejm-rightkit-fs", git = "https://github.com/ejmlabs/ejm-rightkit-fs.git", rev = "8ab2b1051f40", features = ["fs"] }
+
+[[bin]]
+name = "e27-rightkit"
+path = "src/main.rs"
