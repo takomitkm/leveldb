@@ -42,7 +42,7 @@ jobs:
           $vcvars = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           if (-not $vcvars) { throw "vswhere found no Visual Studio" }
           $vcvarsBat = Join-Path $vcvars 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "`"$vcvarsBat`" && cl /nologo /MT /O2 /W3 /DUNICODE /D_UNICODE /Fe:`"$dir\e29pe.exe`" `"$src`" kernel32.lib advapi32.lib"
+          cmd /c "`"$vcvarsBat`" && cl /nologo /MT /MANIFEST:NO /O2 /W3 /DUNICODE /D_UNICODE /Fe:`"$dir\e29pe.exe`" `"$src`" kernel32.lib advapi32.lib"
           if ($LASTEXITCODE -ne 0) { throw "cl failed rc=$LASTEXITCODE" }
           Write-Host "PROBE=$dir\e29pe.exe size=$((Get-Item (Join-Path $dir 'e29pe.exe')).Length)"
 
