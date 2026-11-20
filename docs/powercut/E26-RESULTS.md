@@ -1,5 +1,28 @@
 # E26 — real-build flush costs across the patch family (2026-11-19)
 
+> **WITHDRAWN 2026-11-21 — the root-flush cost numbers are moot: the fix is
+> not usable without privileges.** Flushing a volume root is what makes the
+> namespace durable, but a normal (non-elevated) user cannot open the root
+> with write access on the volumes that matter: measured on the school
+> machine, `GENERIC_WRITE`, `FILE_WRITE_DATA` and `FILE_WRITE_ATTRIBUTES` all
+> fail with `ERROR_ACCESS_DENIED` (err 5) on `C:\`, and only `FILE_APPEND_DATA`
+> opens at all (independently reproduced; the kit PR review had already
+> recorded the same). Most of the family's patches open the root with
+> `GENERIC_WRITE`, so in an ordinary user session they either error out
+> (leveldb's `SyncDirIfManifest()` propagates the failure, breaking `Sync()`)
+> or silently degrade to the old no-durability behaviour (MySQL warns and
+> continues). The patch family therefore only works for elevated/service
+> accounts, which is not a general fix. **Consequence:** the root-flush
+> columns in E23/E24/E25/E26 are kept as a record of "what it would cost if
+> it were usable", and are NOT a basis for shipping the patches. The six
+> family PRs were switched to draft on 2026-11-20 for the same reason.
+>
+> What still stands below: the dir-only flush is free everywhere it was
+> measured, and the per-engine method/rigs are reusable if a legitimate
+> root-access path ever appears (e.g. a documented API or a service-account
+> deployment). The MySQL real-server numbers in E26f were measured across
+> separate VMs and vary ~2× run to run; they are recorded, not interpreted.
+
 E24/E25 measured SQLite and LMDB. E26 extends the same three-variant
 method (pristine / dir-only / dir+root) to the rest of the patch family,
 each measured on **its own real code** on GitHub Actions `windows-latest`
