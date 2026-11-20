@@ -84,7 +84,7 @@ static int RunRightkit(int arm, int rep, const char* dir, char* note) {
   snprintf(target, sizeof target, "%s\\rk_%d", dir, rep);
   char exepath[512];
   GetModuleFileNameA(nullptr, exepath, sizeof exepath);
-  char* slash = strrchr(exepath, '\');
+  char* slash = strrchr(exepath, '\\');
   if (slash) *(slash + 1) = 0; else strcpy(exepath, "X:\\");
   snprintf(cmdline, sizeof cmdline, "\"%s%s\" \"%s\"", exepath, exe, target);
   STARTUPINFOA si; ZeroMemory(&si, sizeof si); si.cb = sizeof si;
