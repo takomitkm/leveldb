@@ -13,7 +13,7 @@ harness, interleaved rounds, deltas only (runner storage is shared noise).
 | E26c pebble | takomitkm/pebble `bench-e26`, `e26-pebble.yml` | green |
 | E26d kit | harness on takomitkm/leveldb `bench-e26`, `e26-kit-via-leveldb.yml` (kit fork Actions disabled by GitHub) | green (below) |
 | E26e rocksdb | matrix on takomitkm/leveldb `bench-e26`, `e26-rocksdb-via-leveldb.yml` (rocksdb fork Actions disabled) | green (below) |
-| E26f MySQL | sim on takomitkm/leveldb `bench-e26`, `e26-mysql-sim.yml` | green (below) |
+| E26f MySQL | real server build on takomitkm/leveldb `bench-e26`, `e26-mysql-via-leveldb.yml` (13 rounds) | green run 44729402177 (below) |
 | E26g PG | school machine, probe `t_dirsync_root.c`/`t_rootcost.c` | done (below) |
 
 ## E26a leveldb (real `leveldb.lib` × 3 env_windows variants, DB::Put loop)
@@ -128,7 +128,44 @@ fork's Actions is disabled by GitHub, same as kit's):
   staged into that layout; `--compression_type=none` is required (Snappy
   not linked) and `gflags.dll` must sit next to `db_bench.exe`.
 
-## E26f MySQL-shaped sim (server build out of CI budget — explicit simulation)
+## E26f MySQL — real server build on Actions (was: call-site sim, kept below as a cross-check)
+
+Public-repo Actions has no minute quota and a 6 h per-job ceiling, so the
+full server is affordable (an earlier "out of CI budget" note was wrong).
+Three builds from one matrix job each (`e26-mysql-via-leveldb.yml`, leveldb
+fork; ~1.6 h per round incl. build), Benches via the mysql client after
+`--initialize-insecure`: 200 rounds of CREATE TABLE (new .ibd → dir flush)
++ 50 INSERTs + DROP TABLE (unlink → dir flush) on InnoDB file-per-table.
+
+Run 44729402177 (green, all three variants):
+
+| variant | 200 rounds | per round |
+|---|---|---|
+| base (upstream trunk 06bcb0eb) | 12.8 s | 64.0 ms |
+| dironly (PR #895 commits 1-2) | 6.9 s | 34.5 ms |
+| dirroot (PR #895 head, + volume root) | **7.7 s** | **38.5 ms** |
+
+- **dirroot − dironly = +0.8 s per 200 rounds = +4 ms/round**, i.e. ~+2 ms
+  per root-flush-bearing operation (two directory ops per round) — the same
+  band as the sim's 1.3–1.6 ms/op and E23's 1.47 ms. This is the number to
+  weight against InnoDB's fsync-per-file baseline.
+- **base measuring ~2× slower than both patched variants is an outlier, not
+  the patch's doing** (dir-only and dir-root run the same trunk code base
+  and differ by 0.8 s); flagged for a repeat run rather than interpreted.
+  The reliable signal is dirroot vs dironly on identical code.
+
+Build/rig notes (13 rounds to green — every failure was a workflow-shell
+error catchable locally; see the workspace rule "所有代码一律先预检"):
+bison via the winflexbison release zip (choco's shim breaks when copied);
+vcpkg `x64-windows-static-md` for the server plus the dynamic triplet only
+for the DLLs `MYSQL_CHECK_SSL_DLLS` insists on; `applink.c` must be staged
+AND copied into vcpkg's include tree (sql-common includes it directly);
+build-tree DLLs (`libprotobuf-lite.dll` et al.) must sit next to mysqld;
+`--initialize-insecure` needs datadir/tmpdir pre-created; the SQL file is
+fed with `cmd /c "mysql ... < file"` (PowerShell has no `<` redirection, and
+`mysql -e "source f"` is parsed server-side → ERROR 1064).
+
+### Simulated cross-check (earlier, kept for the per-op unit price)
 
 Replicates the six `os_parent_dir_fsync_win()` call sites' Win32 shapes
 (mkdir / create / delete / rename), 200 iters × 3 rounds, three variants:
@@ -140,10 +177,7 @@ Replicates the six `os_parent_dir_fsync_win()` call sites' Win32 shapes
 | rename (one flush) | 0.42 | 0.54 (**+0.13**) | 1.89 (**+1.47**) |
 
 - Root flush unit price on the runner: **1.3–1.6 ms** — consistent with
-  E23's 1.47 ms. MySQL pays it per directory-altering operation, and
-  InnoDB's op mix is create/delete/rename heavy (redo/undo/ibd/clone), so
-  the patch's per-transaction cost in InnoDB terms is the op count times
-  ~1.5 ms — the number to weigh against MySQL's fsync-per-file baseline.
+  E23's 1.47 ms; the real-server delta above (+~2 ms/op) brackets with it.
 
 ## E26g PostgreSQL v4 on the school machine (non-admin, real Windows 11)
 
@@ -174,7 +208,7 @@ access-mask sweep). Findings:
 | pebble | free | +22–31 ms/flush (grows with dirty L0) | per Flush() |
 | RocksDB | free (noise says maybe negative — treat as free) | +13–15 µs/op, 3.4–6.3× base | per memtable flush / dir sync |
 | kit | +43 µs/call | **≈4.5 ms/call** (head 8488ca5a, 200/200 clean; the older 669d3a4a errored 200/200 with err32 — fixed by the FILE_APPEND_DATA + ordering commits) | per sync_directory |
-| MySQL (sim) | +0.07–0.15 ms/op | +1.3–1.6 ms/op | per create/delete/rename |
+| MySQL (real server) | (dir-only 34.5 ms/round vs base outlier 64) | +4 ms/round vs dir-only (dirroot 38.5) | per create/delete/rename |
 | PG | 530–559 µs | skipped (root ACL) or volume-dirty-dependent | per durable_rename/unlink |
 
 The one-sentence takeaway stands across all nine engines: **the
