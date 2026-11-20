@@ -1,0 +1,71 @@
+name: e29-build-winpe-bundle
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e29-build-winpe-bundle.yml'
+      - 'docs/powercut/e29/**'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+
+      - name: Build rightkit single-operation PE files
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e29'
+          cargo build --release --manifest-path (Join-Path $dir 'Cargo.toml') --target x86_64-pc-windows-msvc --bins
+          $bin = Join-Path $dir 'target/x86_64-pc-windows-msvc/release'
+          foreach ($name in @('rightkit-create-dir.exe','rightkit-rename.exe','rightkit-delete.exe','rightkit-write.exe')) {
+            $p = Join-Path $bin $name
+            if (-not (Test-Path $p)) { throw "missing: $p" }
+            Write-Host "BUILT=$p size=$((Get-Item $p).Length)"
+          }
+
+      - name: Compile E29 WinPE wrapper probe
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e29'
+          $src = Join-Path $dir 'e29pe.cpp'
+          if (-not (Test-Path $src)) { throw "missing e29pe.cpp (to be added next)" }
+          $vcvars = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          if (-not $vcvars) { throw "vswhere found no Visual Studio" }
+          $vcvarsBat = Join-Path $vcvars 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvarsBat`" && cl /nologo /O2 /W3 /DUNICODE /D_UNICODE /Fe:`"$dir\e29pe.exe`" `"$src`" advapi32.dll kernel32.dll"
+          if ($LASTEXITCODE -ne 0) { throw "cl failed rc=$LASTEXITCODE" }
+          Write-Host "PROBE=$dir\e29pe.exe size=$((Get-Item (Join-Path $dir 'e29pe.exe')).Length)"
+
+      - name: Assemble bundle
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e29'
+          $bundle = Join-Path $pwd 'e29-bundle'
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $bin = Join-Path $dir 'target/x86_64-pc-windows-msvc/release'
+          Copy-Item (Join-Path $dir 'e29pe.exe') $bundle -Force
+          foreach ($name in @('rightkit-create-dir.exe','rightkit-rename.exe','rightkit-delete.exe','rightkit-write.exe')) {
+            Copy-Item (Join-Path $bin $name) $bundle -Force
+          }
+          Copy-Item (Join-Path $dir 'e29-run.sh') $bundle -Force
+          Copy-Item (Join-Path $dir 'e29-launch.ps1') $bundle -Force
+          Copy-Item (Join-Path $dir 'winpeshl.ini') $bundle -Force
+          Get-ChildItem $bundle | ForEach-Object { Write-Host ("FILE={0} {1}" -f $_.Name,$_.Length) }
+          Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath (Join-Path $pwd 'e29-bundle.zip') -Force
+          Write-Host "ZIP=$((Get-Item (Join-Path $pwd 'e29-bundle.zip')).Length)"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: e29-bundle-${{ github.run_id }}
+          path: e29-bundle.zip
+          if-no-files-found: error

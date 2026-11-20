@@ -1,0 +1,23 @@
+[package]
+name = "e28-rightkit-ops"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rightkit_fs = { package = "ejm-rightkit-fs", git = "https://github.com/ejmlabs/ejm-rightkit-fs.git", rev = "8ab2b1051f40", features = ["fs"] }
+
+[[bin]]
+name = "rightkit-create-dir"
+path = "src/create-dir.rs"
+
+[[bin]]
+name = "rightkit-rename"
+path = "src/rename.rs"
+
+[[bin]]
+name = "rightkit-delete"
+path = "src/delete.rs"
+
+[[bin]]
+name = "rightkit-write"
+path = "src/write.rs"
