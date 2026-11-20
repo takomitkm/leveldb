@@ -1,0 +1,57 @@
+name: e28-tier1-rightkit-single-ops
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e28-tier1-rightkit-single-ops.yml'
+      - 'docs/powercut/e28/**'
+
+jobs:
+  e28:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, FileSystem, DriveType, @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} | Format-Table | Out-String | Write-Host
+
+      - name: Build four single-operation rightkit consumers (unmodified dependency)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e28'
+          cargo build --release --manifest-path (Join-Path $dir 'Cargo.toml') --target x86_64-pc-windows-msvc --bins
+          $anchor = Join-Path $dir 'target/x86_64-pc-windows-msvc/release/rightkit-write.exe'
+          if (-not (Test-Path $anchor)) { throw "rightkit op exe not found: $anchor" }
+          foreach ($name in @('rightkit-create-dir.exe','rightkit-rename.exe','rightkit-delete.exe','rightkit-write.exe')) {
+            $p = Join-Path (Split-Path -Parent $anchor) $name
+            if (-not (Test-Path $p)) { throw "missing rightkit op exe: $p" }
+            Write-Host "OP_EXE=$p"
+          }
+          Write-Host "RIGHTKIT_EXE=$anchor"
+
+      - name: Run E28 ETW arms
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e28'
+          $anchor = Join-Path $dir 'target/x86_64-pc-windows-msvc/release/rightkit-write.exe'
+          & (Join-Path $dir 'run-e28.ps1') -Volume D: -Reps 100 -NoPause -RightKitExe $anchor
+          $code = $LASTEXITCODE
+          Write-Host "E28 script exit: $code"
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e28-tier1-${{ github.run_id }}
+          path: |
+            docs/powercut/e28/e28-report-*.txt
+            docs/powercut/e28/e28-log-*.txt
+            docs/powercut/e28/e28-*.csv
+          if-no-files-found: warn
