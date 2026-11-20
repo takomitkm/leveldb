@@ -1,8 +1,40 @@
-# Power-cut / block-tracing test rig (E11 / E14 / E17 / E19 / E21 / E23 / E24-E26)
+# Power-cut / block-tracing test rig (E11–E27; master index below)
 
 This directory archives the measurement rigs behind the Windows
 parent-directory-flush fix (`SyncDirIfManifest()`, upstream PR #1388) and
 its README claims. Three generations, one question each:
+
+## Master index (E11–E27)
+
+> **E1–E10:** no archived record in this repository. The power-cut series as
+> archived here starts at E11; do not infer results for earlier numbers from
+> this table. **E18** was reserved for a patch-body run that never happened;
+> **E20** was assessed as not executable; **E22** was inconclusive. The next
+> free number is **E27**.
+
+| ID | What it tested | Environment | Result |
+|---|---|---|---|
+| **E11** | Does rename + `fsync(dir)` survive a power cut on a POSIX filesystem? | Debian guest (ext4), QEMU/TCG, host kills QEMU, reboot autopsy | `fsync(dir)` 5/5 SURVIVED; no `fsync(dir)` 8/8 LOST. The model discriminates. Linux evidence, not Windows. |
+| **E12** | Windows-native power-cut matrix attempt (WinPE ISO rebuild) | QEMU/TCG + WinPE on the school machine | Stopped without valid data: WinPE boot/black-screen/serial issues. No measurements. |
+| **E13** | WinPE/QEMU power-cut with COM1 markers | QEMU/TCG + WinPE 19041 | No valid data: WinPE has no serial driver, and the host kill landed after the NTFS lazy writer; the no-flush teeth arm survived. Superseded by E14. |
+| **E14** | Which operation actually puts a namespace change on the device? | QEMU `blklogwrites` + WinPE 19041; six arms ×3 reps | `FlushFileBuffers(file)` covers data, not the directory entry; `MOVEFILE_WRITE_THROUGH` issues no flush and no FUA; the directory-handle flush appeared to be the only positive operation (attribution revised by E17). |
+| **E15** | Reproduce E14 on a full Windows stack | QEMU + full Windows 10 Pro 22H2 golden image; same arms | Identical results; the E14 findings are not a WinPE artifact. |
+| **E16** | Documentation backfill (not an experiment) | — | Updated the librime comment, the leveldb PR #1383 body and the fork README with the E14/E15 results. |
+| **E17** | Per-DB patch shapes; parent-directory flush vs volume-root flush | QEMU + WinPE 19041 and full Windows 10 Pro 22H2; 16 arms ×3 reps + installer arm 90 | Parent-directory flush: 0 MFT-zone writes, the entry is lost (also with a non-resident `$I30`); volume-root flush: 4–5 writes, create/rename/delete persist. Revises E14. |
+| **E18** | Reserved: run the actual patch bodies through the rig | — | Never executed. |
+| **E19** | Does `fsync(dir)` matter on Linux + NTFS? | Debian 12 + ntfs-3g, three NTFS volumes under `blklogwrites` | `fsync(file)` alone already persists the directory entry; `fsync(dir)` adds nothing; the no-flush teeth arm loses the file. Opposite of ext4. |
+| **E20** | Windows + ext4 | — | Assessed as not executable: no supported driver, non-admin host, and a third-party FSD would not generalize. |
+| **E21** | On a real Windows kernel, does a parent-directory flush reach the device? | GitHub Actions `windows-latest`, `wpr` DiskIO ETW; four cumulative arms ×100 reps | Flush IRPs +1.00/call for both the parent directory and the volume root; writes ~0.1/call for the parent vs 1.3–3.1 for the root. The parent-directory flush is an empty-set flush; reproduces E17. |
+| **E22** | ntfs3 + `dm-log-writes` in CI | Ubuntu runner, ntfs3, `dm-log-writes` | Minimal repro runs, but the filesystem landed on the log image and the log device read zeros; inconclusive. Kernel source: `ntfs_file_fsync` includes parent-index writeback. |
+| **E23** | Per-commit cost, SQLite-shaped simulation | GitHub Actions `windows-latest`; 200 transactions per variant + warmup | Directory flush free; root flush +1.473 ms/commit (≈2×, TPS 698→344). |
+| **E24** | Real SQLite build cost | `windows-latest`; three amalgamation variants (base / dir / dir+root) | Directory flush +0.06 ms/txn; dir+root +5.4 ms/txn (≈5.2×, TPS 795→150); EXTRA 2×; WAL zero tax; speedtest1 +35–50%. |
+| **E25** | Real LMDB build cost | `windows-latest` plus Linux jobs; three variants | Root flush +2.5–3 ms per fresh env (`env_open`/`env_copy`); commit path zero tax; root flush works non-admin on the runner (`root_err=0`). |
+| **E26** | Patch-family cost matrix | GitHub Actions rigs for leveldb / restic / pebble / kit / RocksDB / MySQL; PostgreSQL on the school machine | leveldb +3.5 ms/manifest-sync at 256 KiB; restic +38 ms/backup (+4%); pebble +22–31 ms/flush growing with dirty L0; kit directory flush +43 µs/call, dir+root ≈4.5 ms/call; RocksDB 3.4–6.3× base; MySQL 1.3–1.6 ms/op; PostgreSQL 559 µs (C: root ACL denied); root cost tracks the volume's dirty metadata. |
+| **E27** | Operation-level `FILE_WRITE_THROUGH`: mkdir / rename / delete on the operation's own handle | Proposed: local ETW first, then the QEMU crash rig | Not run. Highest-value arm is rename (the Microsoft documentation's example); the file-create analog is negative in E14 arm 5. |
+
+## Detailed summaries
+
+The same rigs in their original long-form entries:
 
 | Rig | Question | Method | Result |
 |---|---|---|---|
