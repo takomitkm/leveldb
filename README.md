@@ -33,6 +33,8 @@ compatibility audit** and links the detailed execution checklist; earlier
 platform-parity conclusions are not a guarantee that downstream applications
 can directly replace their library.
 
+**Experiment index (E11–E27).** The power-cut and durability experiments behind the Windows directory-flush work are indexed in [docs/powercut/README.md](docs/powercut/README.md#master-index-e11e27).
+
 **How to tell what is original here.** When the *Change* title is a link — e.g.
 [Durable `RenameFile`](https://github.com/takomitkm/leveldb/commit/3951ee8) — the row is this fork's own work and the link points at the
 introducing commit. Titles in plain bold came from someone else's PR or
