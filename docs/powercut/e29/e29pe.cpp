@@ -40,9 +40,12 @@ static BOOL ReadArm(int* arm, int* reps) {
     static BYTE buf[1 << 20];
     if (need && need <= (1u << 20) && gft('RSMB', 0, buf, need) == need) {
       for (UINT i = 0; i + 7 <= need; ++i) {
-        if (memcmp(buf + i, "E29ARM=", 7) == 0) {
-          *arm = atoi((const char*)buf + i + 7);
-          const char* r = strstr((const char*)buf + i, "REPS=");
+        const char* hit = nullptr;
+        if (memcmp(buf + i, "E29ARM=", 7) == 0) hit = (const char*)buf + i + 7;
+        else if (memcmp(buf + i, "E17ARM=", 7) == 0) hit = (const char*)buf + i + 7;
+        if (hit) {
+          *arm = atoi(hit);
+          const char* r = strstr(hit, "REPS=");
           *reps = r ? atoi(r + 5) : 3;
           if (*reps < 1) *reps = 1;
           if (*reps > 16) *reps = 16;
