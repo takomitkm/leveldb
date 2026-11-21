@@ -84,6 +84,7 @@ power cut.**
 
 ## Artifacts
 
+In this repository:  (probe source, build/run/launch/autopsy scripts and the verdict driver, mirrored from the rig).
 - School machine `D:\yzd\leveldb-e2e-yhPf93BW\`: `e31-{base,vm,log}-a{20..23}.img`,
   `e31-crash-a*-{worst,best}.img`, `e31-autopsy.log`, `e31_verdict.py`.
 - Probe/scripts: `e29pe.cpp`, `e31-build.sh`, `e31-run.sh`, `e31-launch.ps1`,

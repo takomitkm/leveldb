@@ -87,6 +87,7 @@ the parent directory entry does not, so nothing is listable.
 
 ## Artifacts
 
+In this repository:  (probe source, build/run/launch/autopsy scripts and the verdict driver, mirrored from the rig).
 - School machine `D:\yzd\leveldb-e2e-yhPf93BW\`: `e30-{base,vm,log}-a{34..37}.img`,
   `e30-crash-a*-{worst,best}.img`, `e30-autopsy.log`, `e30_verdict.py`.
 - Probe/scripts: `e30pe.cpp` (guest `/home/ci/e13/`), `e30-build.sh`,
