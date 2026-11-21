@@ -10,7 +10,7 @@ its README claims. Three generations, one question each:
 > archived here starts at E11; do not infer results for earlier numbers from
 > this table. **E18** was reserved for a patch-body run that never happened;
 > **E20** was assessed as not executable; **E22** was inconclusive. The next
-> free number is **E30**.
+> free number is **E33**.
 
 | ID | What it tested | Environment | Result |
 |---|---|---|---|
