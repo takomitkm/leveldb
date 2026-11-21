@@ -1,4 +1,4 @@
-#>
+<#
   run-e32.ps1 - E32 Tier-1: NtFlushBuffersFileEx(FLUSH_AND_PURGE=8) vs flag 0 / Win32 flush.
 
   Question: on build 26100+ (Server 2025 / Windows 11 24H2+), does
