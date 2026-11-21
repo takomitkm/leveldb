@@ -1,0 +1,42 @@
+name: e32-tier1-flushpurge
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e32-tier1-flushpurge.yml'
+      - 'docs/powercut/e32/**'
+
+jobs:
+  e32:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, FileSystem, DriveType, @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} | Format-Table | Out-String | Write-Host
+
+      - name: Run E32 flush-and-purge arms
+        shell: pwsh
+        run: |
+          $dir = Join-Path $pwd 'docs/powercut/e32'
+          & (Join-Path $dir 'run-e32.ps1') -Volume D: -Reps 100 -NoPause
+          $code = $LASTEXITCODE
+          Write-Host "E32 script exit: $code"
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e32-tier1-${{ github.run_id }}
+          path: |
+            docs/powercut/e32/e32-report-*.txt
+            docs/powercut/e32/e32-log-*.txt
+            docs/powercut/e32/e32-*.csv
+          if-no-files-found: warn
