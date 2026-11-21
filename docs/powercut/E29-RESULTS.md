@@ -157,3 +157,13 @@ evidence only. Running those through the journal rig is the natural E30.
 Scope: WinPE 19041 and a Windows Server 2025 runner volume, QEMU IDE/TCG;
 Win11 `ntfs.sys`, NVMe/virtio device models, ReFS, SMB and a physical power
 cut (Tier-2) remain untested.
+
+## Follow-up (2026-11-21)
+
+The two gaps recorded above are now closed, both negative: the exact NT-level
+shapes (E27-F/G) were run through the journal rig as **E30**
+([E30-RESULTS.md](E30-RESULTS.md)), and rightkit-fs's public single
+operations as **E31** ([E31-RESULTS.md](E31-RESULTS.md)). Separately,
+`NtFlushBuffersFileEx(FLUSH_AND_PURGE)` on 24H2+ was measured as **E32**
+([E32-RESULTS.md](E32-RESULTS.md)) — accepted, but no stable evidence it is
+stronger than a plain flush.
