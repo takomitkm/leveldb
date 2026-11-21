@@ -72,7 +72,8 @@ $OPEN_EXISTING = [uint32]3
 $CREATE_ALWAYS = [uint32]2
 $BACKUP_SEM = [uint32]0x02000000
 $ACCESS_DIR_APPEND = [uint32]2147483652   # GENERIC_READ | FILE_APPEND_DATA
-$ACCESS_FILE_RW = [uint32]2147483649      # GENERIC_READ | GENERIC_WRITE
+$ACCESS_FILE_RW = [uint32]3221225472      # GENERIC_READ | GENERIC_WRITE (0xC0000000)
+$ZERO = [IntPtr]::Zero
 
 function NT-Str([int]$st) {
   $dos = [E32Native]::RtlNtStatusToDosError($st)
@@ -153,12 +154,12 @@ function Run-Arm([string]$arm) {
       switch ($arm) {
         'A' { }
         'B' { [void][E32Native]::FlushFileBuffers($handles[$r]) }
-        'C' { $status["rep$r"] = NT-Str (Ex-Flush $handles[$r] ([uint32]0) [IntPtr]::Zero) }
-        'D' { $status["rep$r"] = NT-Str (Ex-Flush $handles[$r] ([uint32]8) [IntPtr]::Zero) }
-        'E' { $status["rep$r"] = NT-Str (Ex-Flush $dirH ([uint32]0) [IntPtr]::Zero) }
-        'F' { $status["rep$r"] = NT-Str (Ex-Flush $dirH ([uint32]8) [IntPtr]::Zero) }
-        'G' { $status["rep$r"] = NT-Str (Ex-Flush $rootH ([uint32]8) [IntPtr]::Zero) }
-        'H' { $status["rep$r"] = NT-Str (Ex-Flush $rootH ([uint32]0) [IntPtr]::Zero) }
+        'C' { $status["rep$r"] = NT-Str (Ex-Flush $handles[$r] ([uint32]0) $ZERO) }
+        'D' { $status["rep$r"] = NT-Str (Ex-Flush $handles[$r] ([uint32]8) $ZERO) }
+        'E' { $status["rep$r"] = NT-Str (Ex-Flush $dirH ([uint32]0) $ZERO) }
+        'F' { $status["rep$r"] = NT-Str (Ex-Flush $dirH ([uint32]8) $ZERO) }
+        'G' { $status["rep$r"] = NT-Str (Ex-Flush $rootH ([uint32]8) $ZERO) }
+        'H' { $status["rep$r"] = NT-Str (Ex-Flush $rootH ([uint32]0) $ZERO) }
       }
     } catch { $errors.Add($_.Exception.Message) | Out-Null }
   }
