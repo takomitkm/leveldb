@@ -16,6 +16,7 @@
     F  Ex(dir,  FLAGS=8)          <- FLUSH_AND_PURGE on a directory handle
     G  Ex(root, FLAGS=8)          <- on the volume ROOT dir (append-data open)
     H  Ex(root, FLAGS=0)
+    I  FlushFileBuffers(root)     <- the E17/E21 shape: Win32 flush on the root dir
   Deltas vs A tell whether flag 8 reaches further than flag 0 (volume-wide
   flush) or behaves like the plain flush.
 
@@ -160,6 +161,7 @@ function Run-Arm([string]$arm) {
         'F' { $status["rep$r"] = NT-Str (Ex-Flush $dirH ([uint32]8) $ZERO) }
         'G' { $status["rep$r"] = NT-Str (Ex-Flush $rootH ([uint32]8) $ZERO) }
         'H' { $status["rep$r"] = NT-Str (Ex-Flush $rootH ([uint32]0) $ZERO) }
+        'I' { [void][E32Native]::FlushFileBuffers($rootH) }
       }
     } catch { $errors.Add($_.Exception.Message) | Out-Null }
   }
@@ -185,7 +187,7 @@ function Run-Arm([string]$arm) {
 }
 
 $results = @()
-foreach ($arm in 'A','B','C','D','E','F','G','H') {
+foreach ($arm in 'A','B','C','D','E','F','G','H','I') {
   Write-Host ("[E32] arm {0} ..." -f $arm)
   $results += Run-Arm $arm
 }
