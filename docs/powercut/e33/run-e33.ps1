@@ -129,8 +129,8 @@ public static class E33Native {
 '@
   }
 
-  $GENERIC_READ     = [uint32]0x80000000
-  $GENERIC_WRITE    = [uint32]0x40000000
+  $GENERIC_READ     = [uint32]2147483648   # 0x80000000
+  $GENERIC_WRITE    = [uint32]1073741824   # 0x40000000
   $FILE_APPEND_DATA = [uint32]0x00000004
   $ACCESS_DIR_RW    = $GENERIC_READ -bor $FILE_APPEND_DATA   # non-admin dir shape
   $ACCESS_FILE_RW   = $GENERIC_READ -bor $GENERIC_WRITE
