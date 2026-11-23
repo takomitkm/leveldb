@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<WindowsPerformanceRecorder Version="1.0" Author="E33" Copyright="E33">
+<!-- E33.1 trace profile: Kernel-Disk IO events + the rig's own user-mode markers.
+     DetailLevel must be Verbose: with "Light" the DiskIo keywords are not
+     enabled and the session records no DiskIo events at all (verified in
+     run 45286622081). -->
+<WindowsPerformanceRecorder Version="1.0" Author="E33">
   <Profiles>
     <EventCollector Id="E33Collector" Name="E33Collector">
-      <BufferSize Value="256"/>
-      <Buffers Value="128"/>
+      <BufferSize Value="512"/>
+      <Buffers Value="256"/>
     </EventCollector>
-    <EventProvider Id="DiskIoProvider" Name="Microsoft-Windows-Kernel-Disk"/>
+    <EventProvider Id="DiskIoProvider" Name="Microsoft-Windows-Kernel-Disk" Level="5"/>
     <EventProvider Id="E33MarkerProvider" Name="e33c0de1-0000-4000-8000-00e33c0de100" Level="5"/>
-    <Profile Id="E33Full.Light.File" Name="E33Full" Description="DiskIO + E33 markers" LoggingMode="File" DetailLevel="Light">
+    <Profile Id="E33Full.Verbose.File" Name="E33Full" Description="DiskIO + E33 markers" LoggingMode="File" DetailLevel="Verbose">
       <Collectors>
         <EventCollectorId Value="E33Collector">
           <EventProviders>

@@ -26,6 +26,7 @@ import csv
 import json
 import os
 import re
+import subprocess
 import sys
 from typing import Dict, List, Optional
 
@@ -82,6 +83,23 @@ def _marker_token(row: List[str]) -> Optional[str]:
                 start = decoded.index("E33M|")
                 return decoded[start:].split(chr(0))[0]
     return None
+
+
+def etl_to_csv(etl: str, csv_path: str) -> bool:
+    """Convert an ETL to CSV with tracerpt (used when no CSV exists yet)."""
+    try:
+        proc = subprocess.run(["tracerpt", etl, "-o", csv_path, "-of", "CSV",
+                               "-y"], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=1800)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("tracerpt failed for %s: %s" % (etl, exc), file=sys.stderr)
+        return False
+    if proc.returncode != 0:
+        print("tracerpt rc=%d for %s: %s"
+              % (proc.returncode, etl, (proc.stderr or proc.stdout)[:300]),
+              file=sys.stderr)
+        return False
+    return os.path.exists(csv_path)
 
 
 def parse_csv(path: str, extra_columns: Optional[Dict[str, int]] = None) -> dict:
@@ -213,11 +231,23 @@ def main() -> int:
     rows = []
     for name in sorted(os.listdir(args.etw_dir)):
         stem, ext = os.path.splitext(name)
-        if ext.lower() != ".csv" or not re.match(r"^arm-[A-Za-z0-9]+$", stem):
+        if not re.match(r"^arm-[A-Za-z0-9]+$", stem):
+            continue
+        if ext.lower() == ".etl":
+            csv_name = stem + ".csv"
+            csv_path = os.path.join(args.etw_dir, csv_name)
+            if not os.path.exists(csv_path):
+                if not etl_to_csv(os.path.join(args.etw_dir, name), csv_path):
+                    rows.append({"arm": stem[len("arm-"):], "etl": name,
+                                 "error": "tracerpt failed"})
+                    continue
+            name = csv_name
+        elif ext.lower() != ".csv":
             continue
         arm = stem[len("arm-"):]
         result = parse_csv(os.path.join(args.etw_dir, name))
         if not any(result["counts"].values()):
+            rows.append({"arm": arm, "csv": name, "error": "no events parsed"})
             continue
         rows.append({"arm": arm, "csv": name, **result})
 

@@ -314,24 +314,51 @@ public static class E33Native {
   } catch {
     $script:ToolErrors.Add("logman selftest: " + $_.Exception.Message) | Out-Null
   }
+  # Tracer selection is *verified*, not assumed: a candidate is only accepted
+  # when the resulting ETL actually contains DiskIo events.  (The "Light"
+  # detail level records none, which cost run 45286622081.)
   $wprp = Join-Path $Root 'e33-profile.wprp'
   $script:Tracer = 'none'
-  $testEtl = Join-Path $etwDir 'tracer-selftest-wpr.etl'
-  if ($script:MarkerReady -and (Test-Path $wprp)) {
-    & $wpr -start $wprp -filemode 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-      Start-Sleep -Milliseconds 300
-      & $wpr -stop $testEtl 2>&1 | Out-Null
-      if (Test-Path $testEtl) { $script:Tracer = 'wprp'; Remove-Item $testEtl -Force -ErrorAction SilentlyContinue }
+  $script:TracerNote = ''
+  $testEtl = Join-Path $etwDir 'tracer-selftest.etl'
+  $testCsv = Join-Path $etwDir 'tracer-selftest.csv'
+
+  function Test-TracerHasDiskIo {
+    param([string]$Etl)
+    if (-not (Test-Path $Etl)) { return 0 }
+    Remove-Item $testCsv -Force -ErrorAction SilentlyContinue
+    & tracerpt $Etl -o $testCsv -of CSV -y 2>&1 | Out-Null
+    if (-not (Test-Path $testCsv)) { return 0 }
+    $n = 0
+    foreach ($line in [IO.File]::ReadLines($testCsv)) {
+      if ($line -match 'DiskIo') { $n++ }
     }
+    return $n
   }
-  if ($script:Tracer -eq 'none') {
-    & $wpr -start DiskIO -filemode 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-      Start-Sleep -Milliseconds 300
-      & $wpr -stop $testEtl 2>&1 | Out-Null
-      if (Test-Path $testEtl) { $script:Tracer = 'wpr'; Remove-Item $testEtl -Force -ErrorAction SilentlyContinue }
+
+  $candidates = @()
+  if ($script:MarkerReady -and (Test-Path $wprp)) {
+    $candidates += @{ Name = 'wprp'; Args = @('-start', $wprp, '-filemode') }
+  }
+  $candidates += @{ Name = 'wpr-diskio'; Args = @('-start', 'DiskIO', '-filemode') }
+
+  foreach ($cand in $candidates) {
+    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+    & $wpr @($cand.Args) 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { continue }
+    Start-Sleep -Milliseconds 300
+    & $wpr -stop $testEtl 2>&1 | Out-Null
+    if (-not (Test-Path $testEtl)) { continue }
+    $diskIo = Test-TracerHasDiskIo -Etl $testEtl
+    if ($diskIo -gt 0) {
+      $script:Tracer = $cand.Name
+      $script:TracerNote = "verified: $diskIo DiskIo rows in the selftest ETL"
+      Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
+      Remove-Item $testCsv -Force -ErrorAction SilentlyContinue
+      break
     }
+    $script:ToolErrors.Add("tracer $($cand.Name) recorded no DiskIo events") | Out-Null
+    Remove-Item $testEtl -Force -ErrorAction SilentlyContinue
   }
   $script:TracerProvider = 'Microsoft-Windows-Kernel-Disk' + $(if ($script:Tracer -eq 'wprp') { ' + E33 markers' } else { ' (no markers)' })
   Write-Host ("Tracer  : {0} ({1})" -f $script:Tracer, $script:TracerProvider)
@@ -346,6 +373,9 @@ public static class E33Native {
     } elseif ($script:Tracer -eq 'wprp') {
       & $wpr -start (Join-Path $Root 'e33-profile.wprp') -filemode 2>&1 | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "wpr start (profile) failed" }
+    } elseif ($script:Tracer -eq 'wpr-diskio') {
+      & $wpr -start DiskIO -filemode 2>&1 | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "wpr start (DiskIO) failed" }
     } else {
       & $wpr -start DiskIO -filemode 2>&1 | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "wpr start failed" }
@@ -756,7 +786,7 @@ public static class E33Native {
   $lines.Add(("OS      : {0} build {1}" -f $os.Caption, [Environment]::OSVersion.Version.Build))
   $lines.Add(("Volume  : {0} ({1})" -f $Volume, $disk.FileSystem))
   $lines.Add(("Reps    : {0} per op per arm; large-dir entries: {1}" -f $Reps, $LargeDirEntries))
-  $lines.Add(("Tracer  : {0} ({1})" -f $script:Tracer, $script:TracerProvider))
+  $lines.Add(("Tracer  : {0} ({1}) - {2}" -f $script:Tracer, $script:TracerProvider, $script:TracerNote))
   $lines.Add(("Large-dir I30 non-resident probe: {0}" -f $nonResident))
   $lines.Add("")
   $lines.Add("arm  dir   stream  logfile  ops  flush_ok  avg_flush_ms")
