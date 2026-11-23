@@ -483,3 +483,4 @@ finally {
   try { & (Join-Path $env:SystemRoot 'System32\wpr.exe') -cancel 2>&1 | Out-Null } catch { }
   if (-not $NoPause) { [void](Read-Host "Press Enter to close") }
 }
+exit 0

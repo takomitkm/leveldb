@@ -51,8 +51,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $art = Get-ChildItem -Directory -Filter 'e33-artifacts-*' |
-            Sort-Object Name -Descending | Select-Object -First 1
+          $art = Get-ChildItem -Recurse -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
           $py = (Get-Command python).Source
           & $py docs/powercut/e33/e33_etw_analyze.py `
@@ -65,8 +65,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $art = Get-ChildItem -Directory -Filter 'e33-artifacts-*' |
-            Sort-Object Name -Descending | Select-Object -First 1
+          $art = Get-ChildItem -Recurse -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
           $py = (Get-Command python).Source
           & $py docs/powercut/e33/e33_integrate.py `
@@ -80,7 +80,7 @@ jobs:
         with:
           name: e33-artifacts-${{ github.run_id }}
           path: |
-            e33-artifacts-*/
+            docs/powercut/e33/e33-artifacts-*/
             docs/powercut/e33/e33-report-*.txt
             docs/powercut/e33/e33-log-*.txt
           if-no-files-found: warn
