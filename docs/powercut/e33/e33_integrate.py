@@ -294,16 +294,25 @@ def evaluate_call(call: dict, records: List[dict], writes: List[dict],
         completion_before_return.append({**p, "thread_match": thread_match})
     thread_matched = [p for p in completion_before_return if p["thread_match"]]
 
-    # The write must precede the barrier that covers it.
+    # The write must precede the barrier that covers it:
+    #   target page write -> write completion -> FlushInit -> FlushBuffers
+    #   (same IRP) -> barrier completion -> API returns successfully.
+    # A barrier that only *completes* after the API returned does not count.
     covered = []
     for w in window_writes:
         for p in completion_before_return:
-            if p["start_t"] is not None and p["end_t"] is not None and \
-                    w["t"] <= p["end_t"] and p["end_t"] <= call["flush_end_ft"]:
-                covered.append({"write_t": w["t"], "page": w["page"],
-                                "irp": p["irp"], "barrier_end": p["end_t"],
-                                "thread_match": p["thread_match"]})
-                break
+            if p["start_t"] is None or p["end_t"] is None:
+                continue
+            if not (w["t"] <= p["start_t"] <= p["end_t"]):
+                continue
+            if p["end_t"] > call["flush_end_ft"]:
+                continue
+            covered.append({"write_t": w["t"], "page": w["page"],
+                            "irp": p["irp"],
+                            "barrier_start": p["start_t"],
+                            "barrier_end": p["end_t"],
+                            "thread_match": p["thread_match"]})
+            break
 
     # Classification (see E33-PLAN.md):
     #   L0 no index record for this call's file
@@ -313,8 +322,10 @@ def evaluate_call(call: dict, records: List[dict], writes: List[dict],
     #      API returned (and the API succeeded)
     if not matched:
         level = "L0"
-    elif covered:
+    elif covered and call["api_ok"]:
         level = "L3"
+    elif covered:
+        level = "L2-api-failed"
     elif window_writes:
         level = "L2"
     elif matched:
