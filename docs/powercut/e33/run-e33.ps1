@@ -140,6 +140,11 @@ public static class E33Native {
   $BACKUP_SEM       = [uint32]0x02000000
   $MOVE_WRITE_THROUGH = [uint32]0x1
 
+  function ErrOf([bool]$ok) {
+    if (-not $ok) { return [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+    return 0
+  }
+
   function NT([int]$st) {
     if ($st -ge 0) { return "SUCCESS" }
     $dos = [E33Native]::RtlNtStatusToDosError($st)
@@ -235,9 +240,12 @@ public static class E33Native {
   # fsutil usn read-records? Keep it simple: size of index allocation can be
   # probed with fsutil file queryExtents on the stream path (Server 2019+).
   $extOut = & fsutil file queryExtents "${fixtureLarge}:`$I30:`$INDEX_ALLOCATION" 2>&1
-  if ("$extOut" -match 'Extent') { $nonResident = $true }
-  Write-Host ("  large `$I30 non-resident probe: {0}" -f
-      $(if ($nonResident) { "extents reported" } else { "no extents (fsutil said: $extOut)" }))
+  if ("$extOut" -match 'VCN:.*LCN:') { $nonResident = $true }
+  if ($nonResident) {
+    Write-Host "  large `$I30 non-resident probe: extents reported" -ForegroundColor Gray
+  } else {
+    Write-Host "  large `$I30 non-resident probe: no extents (fsutil said: $extOut)" -ForegroundColor Gray
+  }
 
   # ------------------------------------------------------------ arm runner
   $results = New-Object System.Collections.Generic.List[object]
@@ -269,17 +277,17 @@ public static class E33Native {
     $status = ''
     switch ($Arm) {
       'A' { $status = 'no-flush' }
-      'B' { $ok = [E33Native]::FlushFileBuffers($FileHandle); $status = "win32-file ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
-      'C' { $ok = [E33Native]::FlushFileBuffers($H.Dir); $status = "win32-dir ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
+      'B' { $ok = [E33Native]::FlushFileBuffers($FileHandle); $status = "win32-file ok=$ok err=$(ErrOf $ok)" }
+      'C' { $ok = [E33Native]::FlushFileBuffers($H.Dir); $status = "win32-dir ok=$ok err=$(ErrOf $ok)" }
       'D' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFile($H.Dir, [ref]$ios); $status = "nt-dir " + (NT $st) }
       'E' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFileEx($H.Dir, 0, [IntPtr]::Zero, 0, [ref]$ios); $status = "ntex-dir0 " + (NT $st) }
-      'F' { $ok = [E33Native]::FlushFileBuffers($H.Stream); $status = "win32-i30 ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
+      'F' { $ok = [E33Native]::FlushFileBuffers($H.Stream); $status = "win32-i30 ok=$ok err=$(ErrOf $ok)" }
       'G' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFile($H.Stream, [ref]$ios); $status = "nt-i30 " + (NT $st) }
       'H' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFileEx($H.Stream, 0, [IntPtr]::Zero, 0, [ref]$ios); $status = "ntex-i30-0 " + (NT $st) }
       'I' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFileEx($H.Stream, 8, [IntPtr]::Zero, 0, [ref]$ios); $status = "ntex-i30-8 " + (NT $st) }
-      'J' { $ok = [E33Native]::FlushFileBuffers($H.LogFile); $status = "win32-logfile ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
+      'J' { $ok = [E33Native]::FlushFileBuffers($H.LogFile); $status = "win32-logfile ok=$ok err=$(ErrOf $ok)" }
       'K' { $kh = (Open-Path -Path ($Volume + '\') -Access $ACCESS_DIR_RW -Flags $BACKUP_SEM).Handle; $ok = [E33Native]::FlushFileBuffers($kh); $kerr = $(if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }); [void][E33Native]::CloseHandle($kh); $status = "win32-root ok=$ok err=$kerr" }
-      'L' { $dev = "\\.\$Volume"; $ok = [E33Native]::FlushFileBuffers((Open-Path -Path $dev -Access $GENERIC_READ -Flags 0).Handle); $status = "win32-volume ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
+      'L' { $dev = "\\.\$Volume"; $ok = [E33Native]::FlushFileBuffers((Open-Path -Path $dev -Access $GENERIC_READ -Flags 0).Handle); $status = "win32-volume ok=$ok err=$(ErrOf $ok)" }
       default { $status = 'unknown-arm' }
     }
     $sw.Stop()
