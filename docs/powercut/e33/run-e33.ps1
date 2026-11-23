@@ -176,7 +176,12 @@ public static class E33Native {
     $info = New-Object E33Native+BY_HANDLE_FILE_INFORMATION
     $got = [E33Native]::GetFileInformationByHandle($h, [ref]$info)
     $idx = 0
-    if ($got) { $idx = [uint64]$info.FileIndexHigh * 0x100000000 + $info.FileIndexLow }
+    if ($got) {
+      $hi = [uint64]$info.FileIndexHigh
+      $lo = [uint64]$info.FileIndexLow
+      if ($hi -gt 0 -and ($hi * [uint64]4294967296) -gt [uint64]1000000000) { $idx = $lo }
+      else { $idx = ($hi * [uint64]4294967296) + $lo }
+    }
     return @{ Ok = $true; Handle = $h; Err = 0; Index = $idx }
   }
 
@@ -185,7 +190,12 @@ public static class E33Native {
     $info = New-Object E33Native+BY_HANDLE_FILE_INFORMATION
     $got = [E33Native]::GetFileInformationByHandle($H, [ref]$info)
     if (-not $got) { return 0 }
-    return [uint64]$info.FileIndexHigh * 0x100000000 + $info.FileIndexLow
+    $hi = [uint64]$info.FileIndexHigh
+    $lo = [uint64]$info.FileIndexLow
+    if ($hi -gt 0 -and ($hi * [uint64]4294967296) -gt [uint64]1000000000) {
+      return $lo  # NTFS record numbers are < 2^32; a bogus high word means a struct-layout issue
+    }
+    return ($hi * [uint64]4294967296) + $lo
   }
 
   function New-DirtyFile {
@@ -241,6 +251,7 @@ public static class E33Native {
   } catch {
     $script:ToolErrors.Add("logman selftest: " + $_.Exception.Message) | Out-Null
   }
+  $script:Tracer = 'none'  # logman Kernel-Disk selftest emitted a zero-event ETL on 26100; prefer wpr
   if ($script:Tracer -eq 'none') {
     $testEtl = Join-Path $etwDir 'tracer-selftest-wpr.etl'
     & $wpr -start DiskIO -filemode 2>&1 | Out-Null
@@ -419,7 +430,7 @@ public static class E33Native {
     $i30 = $Dir + ':$I30:$INDEX_ALLOCATION'
     $out = @{ Stream = [IntPtr]::Zero; Dir = [IntPtr]::Zero
               LogFile = [IntPtr]::Zero; StreamOpen = ''; LogFileOpen = '' }
-    $r1 = Open-Path -Path $i30 -Access $ACCESS_FILE_RW -Flags 0
+    $r1 = Open-Path -Path $i30 -Access $ACCESS_FILE_RW -Flags $BACKUP_SEM
     if ($r1.Ok) { $out.Stream = $r1.Handle; $out.StreamOpen = "ok idx=$($r1.Index)" }
     else { $out.StreamOpen = "err=$($r1.Err)" }
     $rd = Open-Path -Path $Dir -Access $ACCESS_DIR_RW -Flags $BACKUP_SEM
