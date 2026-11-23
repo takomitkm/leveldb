@@ -426,6 +426,8 @@ def main() -> int:
     ap.add_argument("--dump-record", type=int, default=None)
     ap.add_argument("--logfile-ranges", action="store_true",
                     help="print $LogFile byte ranges as JSON")
+    ap.add_argument("--packed-json",
+                    help="packed-record map from e33_extract.py (record numbers)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
@@ -436,7 +438,16 @@ def main() -> int:
 
     with open(args.mft, "rb") as fh:
         data = fh.read()
-    m = MftImage(data, args.cluster_size)
+    if args.packed_json:
+        import json as _json
+        with open(args.packed_json, encoding="utf-8") as fh:
+            pj = _json.load(fh)
+        m = MftImage.from_packed(
+            data, pj.get("numbers", []),
+            pj.get("record_size", 1024),
+            pj.get("cluster_size", args.cluster_size))
+    else:
+        m = MftImage(data, args.cluster_size)
     out: dict = {
         "cluster_size": args.cluster_size,
         "record_size": m.record_size,

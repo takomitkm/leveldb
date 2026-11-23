@@ -1,204 +1,243 @@
 #!/usr/bin/env python3
-"""E33 - ETW analyzer: per-arm DiskIo events with byte offsets and barriers.
+"""E33.1 - reproducible ETW analyzer: typed DiskIo payloads from tracerpt CSV.
 
-tracerpt's CSV header leaves the DiskIo payload fields unnamed (the extra
-columns after "User Data"), so this tool reads them by *name* from tracerpt's
-XML rendering when the ETL is small (the logman Kernel-Disk sessions are a
-few hundred KB), and otherwise reports counts only.  The XML schema observed
-on build 26100:
+The E33 ETLs are 60-72 MB, so tracerpt XML rendering is impractical in CI.
+This parser reads the *variable-length payload columns* that tracerpt CSV
+appends after the "User Data" column, using field layouts validated against
+tracerpt XML output from the same build (26100):
 
-  DiskIo / Write          : DiskNumber, IrpFlags, TransferSize, Reserved,
-                            ByteOffset, FileObject, Irp, HighResResponseTime,
-                            IssuingThreadId
-  DiskIo / FlushBuffers   : DiskNumber, IrpFlags, HighResResponseTime, Irp,
-                            IssuingThreadId
+  DiskIo/Write        (28 cols, payload 19..27):
+      DiskNumber, IrpFlags, TransferSize, Reserved, ByteOffset,
+      FileObject, Irp, HighResResponseTime, IssuingThreadId
+  DiskIo/Read         (28 cols) - same layout as Write
+  DiskIo/FlushBuffers (24 cols, payload 19..23):
+      DiskNumber, IrpFlags, HighResResponseTime, Irp, IssuingThreadId
+  DiskIo/WriteInit, DiskIo/FlushInit (21 cols, payload 19..20):
+      Irp, IssuingThreadId
 
-Output (JSON): per arm
-  counts        : write / read / flush_buffers / flush_init totals
-  writes        : [{t, disk, offset, size, irp}]  (only when XML was parsed)
-  flushes       : [{t, disk, irp}]
-  xml_parsed    : bool
+Column 16 "Clock-Time" is a FILETIME (100 ns ticks since 1601-01-01), the
+same time base used by the rig's GetSystemTimePreciseAsFileTime markers.
 
-Usage:
-    python e33_etw_analyze.py --etw-dir DIR --out summary.json [--csv out.csv]
+No XML conversion is needed.  Output JSON per arm:
+  counts, writes[], flushes[], flush_inits[], write_inits[], markers[]
 """
 import argparse
 import csv
 import json
 import os
 import re
-import subprocess
 import sys
-import tempfile
-import xml.etree.ElementTree as ET
+from typing import Dict, List, Optional
 
-EVENT_NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
-TRACE_NS = "http://schemas.microsoft.com/2004/08/events/trace"
+# The rig's own marker provider (manifest-free, so tracerpt shows the GUID).
+MARKER_PROVIDER_GUID = "{e33c0de1-0000-4000-8000-00e33c0de100}"
 
-
-def run_tracerpt(etl: str, out: str, fmt: str) -> bool:
-    cmd = ["tracerpt", etl, "-o", out, "-of", fmt, "-y"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=900)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print("tracerpt failed: %s" % exc, file=sys.stderr)
-        return False
-    if proc.returncode != 0:
-        print("tracerpt rc=%d: %s" % (proc.returncode,
-                                      (proc.stderr or proc.stdout)[:400]),
-              file=sys.stderr)
-        return False
-    return os.path.exists(out)
+# Payload column offsets into a tracerpt CSV row, validated against XML.
+PAYLOAD_LAYOUT: Dict[str, Dict[str, int]] = {
+    "Write": {"disk": 19, "flags": 20, "size": 21, "reserved": 22,
+              "offset": 23, "file_object": 24, "irp": 25,
+              "response": 26, "thread": 27},
+    "Read": {"disk": 19, "flags": 20, "size": 21, "reserved": 22,
+             "offset": 23, "file_object": 24, "irp": 25,
+             "response": 26, "thread": 27},
+    "FlushBuffers": {"disk": 19, "flags": 20, "response": 21,
+                     "irp": 22, "thread": 23},
+    "WriteInit": {"irp": 19, "thread": 20},
+    "FlushInit": {"irp": 19, "thread": 20},
+}
 
 
-def count_csv(path: str) -> dict:
-    """Count DiskIo event types from a tracerpt CSV (header-driven)."""
-    counts = {"write": 0, "read": 0, "flush_buffers": 0, "flush_init": 0,
-              "other": 0}
-    with open(path, encoding="utf-8", errors="replace", newline="") as fh:
-        rd = csv.reader(fh)
-        header = next(rd, None)
-        if header is None:
-            return counts
-        header = [h.strip() for h in header]
-        try:
-            i_name = header.index("Event Name")
-            i_type = header.index("Type")
-        except ValueError:
-            return counts
-        for row in rd:
-            if len(row) <= max(i_name, i_type):
-                continue
-            if row[i_name].strip() != "DiskIo":
-                counts["other"] += 1
-                continue
-            t = row[i_type].strip()
-            if t == "Write":
-                counts["write"] += 1
-            elif t == "Read":
-                counts["read"] += 1
-            elif t == "FlushBuffers":
-                counts["flush_buffers"] += 1
-            elif t == "FlushInit":
-                counts["flush_init"] += 1
-            else:
-                counts["other"] += 1
-    return counts
-
-
-def _int(text):
+def _int(text: Optional[str]) -> Optional[int]:
     if text is None:
+        return None
+    text = text.strip()
+    if not text:
         return None
     try:
         if text.lower().startswith("0x"):
             return int(text, 16)
         return int(text)
-    except (TypeError, ValueError):
+    except ValueError:
         return None
 
 
-def parse_xml(etl: str, max_writes: int = 20000) -> dict:
-    """Parse tracerpt XML for named DiskIo payload fields."""
-    tmp = tempfile.mktemp(suffix=".xml")
-    out = {"writes": [], "flushes": [], "ok": False}
-    if not run_tracerpt(etl, tmp, "XML"):
-        return out
-    try:
-        for _event, elem in ET.iterparse(tmp, events=("end",)):
-            if elem.tag != EVENT_NS + "Event":
+def _str(text: Optional[str]) -> Optional[str]:
+    return text.strip() if text is not None else None
+
+
+def _marker_token(row: List[str]) -> Optional[str]:
+    """Recover the marker token from a rendered marker row, if present."""
+    for cell in row:
+        text = (cell or "").strip()
+        if text.startswith("E33M|"):
+            return text
+        # tracerpt sometimes renders the payload as a hex blob.
+        if len(text) > 32 and all(c in "0123456789abcdefABCDEF" for c in text):
+            try:
+                raw = bytes.fromhex(text)
+                decoded = raw.decode("utf-16-le", errors="ignore")
+            except ValueError:
                 continue
-            rend = elem.find(".//{%s}RenderingInfo" % EVENT_NS)
-            if rend is None:
-                elem.clear()
-                continue
-            prov = rend.find("{%s}Provider" % EVENT_NS)
-            opcode = rend.find("{%s}Opcode" % EVENT_NS)
-            prov_txt = prov.text.strip() if prov is not None and prov.text else ""
-            op_txt = opcode.text.strip() if opcode is not None and opcode.text else ""
-            if prov_txt != "DiskIo":
-                elem.clear()
-                continue
-            data = {}
-            for d in elem.findall(".//{%s}Data" % EVENT_NS):
-                data[d.get("Name")] = (d.text or "").strip()
-            ts = elem.find(".//{%s}TimeCreated" % EVENT_NS)
-            tick = ts.get("SystemTime") if ts is not None else None
-            if op_txt == "Write":
-                if len(out["writes"]) < max_writes:
-                    out["writes"].append({
-                        "t": tick,
-                        "disk": _int(data.get("DiskNumber")),
-                        "offset": _int(data.get("ByteOffset")),
-                        "size": _int(data.get("TransferSize")),
-                        "irp": data.get("Irp"),
-                    })
-            elif op_txt == "FlushBuffers":
-                out["flushes"].append({
-                    "t": tick,
-                    "disk": _int(data.get("DiskNumber")),
-                    "irp": data.get("Irp"),
-                })
-            elem.clear()
-        out["ok"] = True
-    finally:
+            if "E33M|" in decoded:
+                start = decoded.index("E33M|")
+                return decoded[start:].split(chr(0))[0]
+    return None
+
+
+def parse_csv(path: str, extra_columns: Optional[Dict[str, int]] = None) -> dict:
+    """Parse one tracerpt CSV into typed DiskIo rows plus any custom marker rows.
+
+    extra_columns maps a marker Event Name to a dict of field-name -> CSV
+    column index, used for rig-emitted user-mode markers (e33 call boundaries).
+    """
+    counts = {"write": 0, "read": 0, "flush_buffers": 0, "flush_init": 0,
+              "write_init": 0, "marker": 0, "other": 0}
+    writes: List[dict] = []
+    flushes: List[dict] = []
+    flush_inits: List[dict] = []
+    write_inits: List[dict] = []
+    markers: List[dict] = []
+    warnings: List[str] = []
+    extra_columns = extra_columns or {}
+
+    with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+        rd = csv.reader(fh)
+        header = next(rd, None)
+        if header is None:
+            return {"counts": counts, "writes": writes, "flushes": flushes,
+                    "flush_inits": flush_inits, "write_inits": write_inits,
+                    "markers": markers, "warnings": ["empty CSV"]}
+        header = [h.strip() for h in header]
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-    return out
+            i_name = header.index("Event Name")
+            i_type = header.index("Type")
+            i_clock = header.index("Clock-Time")
+        except ValueError:
+            return {"counts": counts, "writes": writes, "flushes": flushes,
+                    "flush_inits": flush_inits, "write_inits": write_inits,
+                    "markers": markers,
+                    "warnings": ["header lacks Event Name/Type/Clock-Time"]}
+
+        for row in rd:
+            if len(row) <= max(i_name, i_type, i_clock):
+                continue
+            name = row[i_name].strip()
+            clock = _int(row[i_clock])
+
+            # Marker events from the rig's own provider: a manifest-free
+            # provider renders as its GUID in the Event Name column.
+            if MARKER_PROVIDER_GUID in name:
+                marker = {"marker": "E33", "t": clock,
+                          "raw_name": name, "payload": row[i_name + 2]
+                          if len(row) > i_name + 2 else ""}
+                # A manifest-free payload is rendered as an opaque blob; try
+                # to recover the UTF-16 token when tracerpt kept it.
+                marker["token"] = _marker_token(row)
+                markers.append(marker)
+                counts["marker"] += 1
+                continue
+
+            if name in extra_columns:
+                m = {"marker": name, "t": clock}
+                for field, col in extra_columns[name].items():
+                    m[field] = _int(row[col]) if col < len(row) else _str(
+                        row[col] if col < len(row) else None)
+                markers.append(m)
+                counts["marker"] += 1
+                continue
+
+            if name != "DiskIo":
+                counts["other"] += 1
+                continue
+            typ = row[i_type].strip()
+            layout = PAYLOAD_LAYOUT.get(typ)
+            if layout is None:
+                counts["other"] += 1
+                continue
+            # Validate the row is long enough for this event's layout.
+            if len(row) <= max(layout.values()):
+                warnings.append("short %s row: %d cols" % (typ, len(row)))
+                continue
+            def get(key: str, _row=row, _layout=layout):
+                return _row[_layout[key]] if key in _layout else None
+            common = {"t": clock}
+            if typ in ("Write", "Read"):
+                common.update({
+                    "disk": _int(get("disk")),
+                    "flags": _str(get("flags")),
+                    "size": _int(get("size")),
+                    "offset": _int(get("offset")),
+                    "file_object": _str(get("file_object")),
+                    "irp": _str(get("irp")),
+                    "response": _int(get("response")),
+                    "thread": _int(get("thread")),
+                })
+                writes.append(common) if typ == "Write" else None
+                if typ == "Write":
+                    counts["write"] += 1
+                else:
+                    counts["read"] += 1
+            elif typ == "FlushBuffers":
+                common.update({
+                    "disk": _int(get("disk")),
+                    "flags": _str(get("flags")),
+                    "response": _int(get("response")),
+                    "irp": _str(get("irp")),
+                    "thread": _int(get("thread")),
+                })
+                flushes.append(common)
+                counts["flush_buffers"] += 1
+            elif typ == "FlushInit":
+                common.update({"irp": _str(get("irp")),
+                               "thread": _int(get("thread"))})
+                flush_inits.append(common)
+                counts["flush_init"] += 1
+            elif typ == "WriteInit":
+                common.update({"irp": _str(get("irp")),
+                               "thread": _int(get("thread"))})
+                write_inits.append(common)
+                counts["write_init"] += 1
+    return {"counts": counts, "writes": writes, "flushes": flushes,
+            "flush_inits": flush_inits, "write_inits": write_inits,
+            "markers": markers, "warnings": warnings[:20]}
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="E33 ETW analyzer")
-    ap.add_argument("--etw-dir", required=True)
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--csv", default=None)
-    ap.add_argument("--xml-max-bytes", type=int, default=24 << 20,
-                    help="parse XML only for ETLs below this size")
+    ap = argparse.ArgumentParser(description="E33.1 reproducible ETW CSV parser")
+    ap.add_argument("--etw-dir", required=True,
+                    help="directory containing arm-*.csv")
+    ap.add_argument("--out", default=None, help="output JSON")
+    ap.add_argument("--csv", default=None, help="compact per-arm CSV")
     args = ap.parse_args()
 
     rows = []
     for name in sorted(os.listdir(args.etw_dir)):
         stem, ext = os.path.splitext(name)
-        if ext.lower() != ".etl" or not name.startswith("arm-"):
+        if ext.lower() != ".csv" or not re.match(r"^arm-[A-Za-z0-9]+$", stem):
             continue
-        if not re.match(r"^arm-[A-Za-z]+$", stem):
-            continue
-        etl = os.path.join(args.etw_dir, name)
         arm = stem[len("arm-"):]
-        entry = {"arm": arm, "etl": name, "size": os.path.getsize(etl)}
-        csv_path = os.path.join(args.etw_dir, stem + ".csv")
-        if run_tracerpt(etl, csv_path, "CSV"):
-            entry.update({"counts": count_csv(csv_path),
-                          "csv": os.path.basename(csv_path)})
-        else:
-            entry.update({"error": "tracerpt CSV failed"})
-        if entry["size"] <= args.xml_max_bytes:
-            parsed = parse_xml(etl)
-            entry["xml_parsed"] = parsed["ok"]
-            if parsed["ok"]:
-                entry["writes"] = parsed["writes"]
-                entry["flushes"] = parsed["flushes"]
-        else:
-            entry["xml_parsed"] = False
-        rows.append(entry)
+        result = parse_csv(os.path.join(args.etw_dir, name))
+        if not any(result["counts"].values()):
+            continue
+        rows.append({"arm": arm, "csv": name, **result})
 
-    payload = json.dumps({"arms": rows}, ensure_ascii=False, indent=1)
+    payload = json.dumps({"schema_version": 2,
+                          "payload_layouts": PAYLOAD_LAYOUT,
+                          "arms": rows}, ensure_ascii=False, indent=1)
     if args.out:
         with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(payload)
     if args.csv:
         with open(args.csv, "w", encoding="utf-8", newline="") as fh:
             wr = csv.writer(fh)
-            keys = ["arm", "write", "read", "flush_buffers", "flush_init",
-                    "xml_parsed", "error"]
-            wr.writerow(keys)
+            wr.writerow(["arm", "write", "read", "flush_buffers",
+                         "flush_init", "write_init", "marker", "warnings"])
             for r in rows:
-                c = r.get("counts") or {}
-                wr.writerow([r.get("arm"), c.get("write"), c.get("read"),
-                             c.get("flush_buffers"), c.get("flush_init"),
-                             r.get("xml_parsed"), r.get("error")])
+                c = r["counts"]
+                wr.writerow([r["arm"], c["write"], c["read"],
+                             c["flush_buffers"], c["flush_init"],
+                             c["write_init"], c["marker"],
+                             ";".join(r["warnings"][:3])])
     if not args.out and not args.csv:
         print(payload)
     return 0

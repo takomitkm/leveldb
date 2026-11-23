@@ -1,8 +1,10 @@
 name: e33-tier1-ntfs-log
 
-# E33 Tier-1: NTFS $LogFile flush attribution for directory-index changes.
-# Per-arm wpr DiskIO ETW sessions, $MFT/$LogFile extraction, offline decoding.
-# Runtime ~15-25 minutes depending on reps.
+# E33.1 Tier-1: NTFS $LogFile flush attribution for directory-index changes.
+# Per-arm wpr DiskIO ETW sessions (custom profile adds rig markers), raw
+# $MFT/$LogFile extraction, full-page $LogFile decoding, and per-call L3
+# barrier attribution.
+# Runtime ~30-45 minutes depending on reps.
 
 on:
   workflow_dispatch:
@@ -14,7 +16,7 @@ on:
 jobs:
   e33:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +30,21 @@ jobs:
             Select-Object DeviceID, FileSystem, DriveType,
               @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} |
             Format-Table | Out-String | Write-Host
+          Get-Partition -DriveLetter D |
+            Select-Object DiskNumber, PartitionNumber, Offset |
+            Format-List | Out-String | Write-Host
+
+      - name: Record code SHA
+        shell: pwsh
+        run: |
+          $sha = $env:GITHUB_SHA
+          $run = $env:GITHUB_RUN_ID
+          [pscustomobject]@{ commit_sha = $sha; run_id = $run
+                              workflow = $env:GITHUB_WORKFLOW
+                              repository = $env:GITHUB_REPOSITORY
+                              built_at = (Get-Date).ToUniversalTime().ToString('o') } |
+            ConvertTo-Json | Set-Content -Path 'e33-build-info.json' -Encoding UTF8
+          Get-Content 'e33-build-info.json'
 
       - name: Python decoder selftests
         shell: pwsh
@@ -47,7 +64,7 @@ jobs:
           Write-Host "E33 script exit: $code"
           if ($code -ne 0) { exit $code }
 
-      - name: ETW counts
+      - name: Parse ETW (typed DiskIo payloads)
         if: always()
         shell: pwsh
         run: |
@@ -60,8 +77,9 @@ jobs:
             --out (Join-Path $art.FullName 'etw-summary.json') `
             --csv (Join-Path $art.FullName 'etw-summary.csv')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content (Join-Path $art.FullName 'etw-summary.csv')
 
-      - name: Decode $LogFile images
+      - name: Decode $LogFile and attribute target pages / barriers
         if: always()
         shell: pwsh
         run: |
@@ -70,9 +88,8 @@ jobs:
           if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
           $py = (Get-Command python).Source
           & $py docs/powercut/e33/e33_integrate.py `
-            --artifacts $art.FullName `
-            --out (Join-Path $art.FullName 'E33-evidence.json')
-          if ($LASTEXITCODE -ne 0) { Write-Host "integrator exit $LASTEXITCODE" }
+            --artifacts $art.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload artifacts
         if: always()
@@ -83,4 +100,5 @@ jobs:
             docs/powercut/e33/e33-artifacts-*/
             docs/powercut/e33/e33-report-*.txt
             docs/powercut/e33/e33-log-*.txt
+            e33-build-info.json
           if-no-files-found: warn

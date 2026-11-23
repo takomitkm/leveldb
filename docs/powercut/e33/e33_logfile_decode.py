@@ -583,8 +583,11 @@ class LogFileParser:
         in (page, offset) order; that is physical log order and enough for
         attributing index operations.
         """
-        oat = OpenAttrTable(self.oat_version)
-        records: List[dict] = []
+        # First pass: collect every LFS record header in physical page order.
+        # Keep the raw page/offset for provenance; never treat physical order
+        # as time order (the circular log wraps and fast pages can be written
+        # out of sequence).
+        found = []
         seen = set()
         page_count = len(self.data) // self.page_size
         for page_no in range(2, page_count):
@@ -607,37 +610,64 @@ class LogFileParser:
                 if (this_lsn == 0 or data_len == 0 or
                         data_len > 0x100000 or
                         record_type not in (LFS_CLIENT_RECORD,
-                                            LFS_CLIENT_RESTART)):
-                    step = self.record_header_len
-                    off += step
+                                            LFS_CLIENT_RESTART) or
+                        this_lsn in seen):
+                    off += self.record_header_len
                     continue
-                # Assemble client data, following spill pages when needed.
-                client_data = self._client_data_from_page(page, off, data_len)
-                if client_data is not None and this_lsn not in seen:
-                    seen.add(this_lsn)
-                    if record_type == LFS_CLIENT_RESTART:
-                        try:
-                            cr = ClientRestart(client_data)
-                            if len(cr.buf) >= 8:
-                                self.oat_version = cr.major
-                        except (LogFileError, struct.error):
-                            pass
-                    else:
-                        try:
-                            rec = ClientLogRecord(
-                                client_data, this_lsn,
-                                (client_seq << 16) | client_idx, txn,
-                                self.cluster_size)
-                        except (LogFileError, struct.error):
-                            rec = None
-                        if rec is not None:
-                            if rec.redo_op == OP_OPEN_NONRESIDENT_ATTRIBUTE:
-                                oat.apply_open(rec)
-                            records.append(self._record_to_dict(rec, oat))
-                step = self.record_header_len + ((data_len + 7) & ~7)
-                if step <= 0:
-                    step = self.record_header_len
-                off += step
+                seen.add(this_lsn)
+                found.append({
+                    "lsn": this_lsn,
+                    "page": page_no,
+                    "offset": off,
+                    "page_offset": off,
+                    "data_len": data_len,
+                    "record_type": record_type,
+                    "client_id": (client_seq << 16) | client_idx,
+                    "txn": txn,
+                    "page_magic": page.magic,
+                })
+                off += self.record_header_len + ((data_len + 7) & ~7)
+
+        # Order by logical sequence number (LSN) so OAT dumps and
+        # OpenNonresidentAttribute records are applied in log time order.
+        # LSNs are 64-bit monotonic counters; the high sequence-number bits
+        # also handle log wraps.
+        found.sort(key=lambda item: item["lsn"])
+
+        oat = OpenAttrTable(self.oat_version)
+        records: List[dict] = []
+        for meta in found:
+            this_lsn = meta["lsn"]
+            page = self.page_by_number(meta["page"])
+            if page is None:
+                continue
+            client_data = self._client_data_from_page(
+                page, meta["offset"], meta["data_len"])
+            if client_data is None:
+                continue
+            if meta["record_type"] == LFS_CLIENT_RESTART:
+                try:
+                    cr = ClientRestart(client_data)
+                    if len(cr.buf) >= 8:
+                        self.oat_version = cr.major
+                        oat.version = cr.major
+                except (LogFileError, struct.error):
+                    pass
+                continue
+            try:
+                rec = ClientLogRecord(client_data, this_lsn,
+                                      meta["client_id"], meta["txn"],
+                                      self.cluster_size)
+            except (LogFileError, struct.error):
+                continue
+            if rec.redo_op == OP_OPEN_NONRESIDENT_ATTRIBUTE:
+                oat.apply_open(rec)
+            row = self._record_to_dict(rec, oat)
+            row["raw_log_page"] = meta["page"]
+            row["raw_record_offset"] = meta["offset"]
+            row["raw_page_offset"] = meta["page_offset"]
+            row["raw_log_page_byte_offset"] = meta["page"] * self.page_size
+            records.append(row)
         return records
 
     def _client_data_from_page(self, page: LogPage, off: int,

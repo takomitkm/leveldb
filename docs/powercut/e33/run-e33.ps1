@@ -28,7 +28,7 @@ param(
   [int]$Reps = 20,
   [int]$LargeDirEntries = 2000,
   [switch]$NoPause,
-  [string[]]$Arms = @('A','B','C','D','E','F','G','H','I','J','K','L'),
+  [string[]]$Arms = @('A','B','C','D','E','F','G','H','I','J','K','L','M','N','O'),
   [switch]$SkipExtract
 )
 
@@ -81,7 +81,66 @@ try {
   Write-Host ("Reps    : {0} per operation per arm; large-dir entries: {1}" -f $Reps, $LargeDirEntries)
   Write-Host ("Python  : {0}" -f $py)
   Write-Host ("Artifacts: {0}" -f $ArtifactDir)
+
+  # Physical placement of the test volume: ETW DiskIo ByteOffset is a
+  # device-relative byte offset, so partition_offset converts it to a
+  # volume-relative LCN byte offset (see e33_integrate.py).
+  $part = $null
+  try {
+    $letter = $Volume.Substring(0, 1)
+    $part = Get-Partition -DriveLetter $letter -ErrorAction Stop
+  } catch {
+    $script:ToolErrors.Add("Get-Partition failed: " + $_.Exception.Message) | Out-Null
+  }
+  $script:DiskNumber = -1
+  $script:PartitionOffset = -1
+  if ($part) {
+    $script:DiskNumber = [int]$part.DiskNumber
+    $script:PartitionOffset = [long]$part.Offset
+  }
+  $volumeInfo = [pscustomobject]@{
+    volume          = $Volume
+    filesystem      = $disk.FileSystem
+    os_build        = [Environment]::OSVersion.Version.Build
+    disk_number     = $script:DiskNumber
+    partition_offset = $script:PartitionOffset
+    cluster_size    = 4096
+    marker_ready    = $script:MarkerReady
+    tracer          = ''
+  }
+  $volumeInfo | ConvertTo-Json | Set-Content -Path (Join-Path $ArtifactDir 'volume-info.json') -Encoding UTF8
+  Write-Host ("Disk    : #{0} partition offset {1}" -f $script:DiskNumber, $script:PartitionOffset)
   Write-Host ""
+
+  # ------------------------------------------------ E33 marker provider (ETW)
+  # A tiny manifest-free provider so every operation boundary is an ETW event
+  # in the same ETL (exact FILETIME timestamps, no QPC conversion guesswork).
+  $markerSrc = Join-Path $Root 'E33Marker.cs'
+  $script:MarkerReady = $false
+  if (Test-Path $markerSrc) {
+    try {
+      if (-not ('E33Marker' -as [type])) {
+        Add-Type -Path $markerSrc -ErrorAction Stop
+      }
+      $script:MarkerReady = [E33Marker]::Register()
+    } catch {
+      $script:ToolErrors.Add("marker Add-Type: " + $_.Exception.Message) | Out-Null
+    }
+  }
+  function Write-Marker {
+    param([uint16]$Id, [string]$Token)
+    if ($script:MarkerReady) {
+      try { return [E33Marker]::WriteMarker($Id, $Token) } catch { }
+    }
+    $ft = 0L
+    try { [E33Native]::GetSystemTimePreciseAsFileTime([ref]$ft) } catch { }
+    return $ft
+  }
+  function Get-FtNow {
+    $ft = 0L
+    try { [E33Native]::GetSystemTimePreciseAsFileTime([ref]$ft) } catch { }
+    return $ft
+  }
 
   # ------------------------------------------------------------ P/Invoke API
   if (-not ('E33Native' -as [type])) {
@@ -129,6 +188,10 @@ public static class E33Native {
       IntPtr eaBuffer, uint eaLength);
   [DllImport("ntdll.dll")]
   public static extern uint RtlNtStatusToDosError(int status);
+  [DllImport("kernel32.dll")]
+  public static extern void GetSystemTimePreciseAsFileTime(out long fileTime);
+  [DllImport("kernel32.dll")]
+  public static extern uint GetCurrentThreadId();
   [StructLayout(LayoutKind.Sequential)]
   public struct BY_HANDLE_FILE_INFORMATION {
     public uint FileAttributes; public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
@@ -251,9 +314,18 @@ public static class E33Native {
   } catch {
     $script:ToolErrors.Add("logman selftest: " + $_.Exception.Message) | Out-Null
   }
-  $script:Tracer = 'none'  # logman Kernel-Disk selftest emitted a zero-event ETL on 26100; prefer wpr
+  $wprp = Join-Path $Root 'e33-profile.wprp'
+  $script:Tracer = 'none'
+  $testEtl = Join-Path $etwDir 'tracer-selftest-wpr.etl'
+  if ($script:MarkerReady -and (Test-Path $wprp)) {
+    & $wpr -start $wprp -filemode 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      Start-Sleep -Milliseconds 300
+      & $wpr -stop $testEtl 2>&1 | Out-Null
+      if (Test-Path $testEtl) { $script:Tracer = 'wprp'; Remove-Item $testEtl -Force -ErrorAction SilentlyContinue }
+    }
+  }
   if ($script:Tracer -eq 'none') {
-    $testEtl = Join-Path $etwDir 'tracer-selftest-wpr.etl'
     & $wpr -start DiskIO -filemode 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
       Start-Sleep -Milliseconds 300
@@ -261,6 +333,7 @@ public static class E33Native {
       if (Test-Path $testEtl) { $script:Tracer = 'wpr'; Remove-Item $testEtl -Force -ErrorAction SilentlyContinue }
     }
   }
+  $script:TracerProvider = 'Microsoft-Windows-Kernel-Disk' + $(if ($script:Tracer -eq 'wprp') { ' + E33 markers' } else { ' (no markers)' })
   Write-Host ("Tracer  : {0} ({1})" -f $script:Tracer, $script:TracerProvider)
   if ($script:Tracer -eq 'none') { throw "no usable ETW tracer" }
 
@@ -270,6 +343,9 @@ public static class E33Native {
       & logman create trace $Name -o $Etl -ets -f bin `
           -p $script:TracerProvider 0xFFFFFFFF 5 2>&1 | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "logman create trace failed rc=$LASTEXITCODE" }
+    } elseif ($script:Tracer -eq 'wprp') {
+      & $wpr -start (Join-Path $Root 'e33-profile.wprp') -filemode 2>&1 | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "wpr start (profile) failed" }
     } else {
       & $wpr -start DiskIO -filemode 2>&1 | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "wpr start failed" }
@@ -326,10 +402,36 @@ public static class E33Native {
   Write-Host ("  large: {0}  (MFT record {1}, entries {2})" -f $fxLarge.Path,
       $fxLarge.Record, $LargeDirEntries)
 
-  $extOut = & fsutil file queryExtents "${($fxLarge.Path)}:`$I30:`$INDEX_ALLOCATION" 2>&1
-  $nonResident = ("$extOut" -match 'VCN:.*LCN:')
-  Write-Host ("  large `$I30 non-resident probe: {0}" -f
-      $(if ($nonResident) { 'extents reported' } else { 'no extents (resident?)' }))
+  # Definitive residency: read the two fixture directory MFT records from the
+  # volume and decode $INDEX_ROOT / $INDEX_ALLOCATION attributes.
+  $fxExtractDir = Join-Path $metaDir 'fixtures'
+  New-Item -ItemType Directory -Force -Path $fxExtractDir | Out-Null
+  $fxRecs = @([long]$fxSmall.Record, [long]$fxLarge.Record) -join ','
+  $null = & $py (Join-Path $Root 'e33_extract.py') --volume $Volume --tag fixtures `
+      --out-dir $fxExtractDir --records $fxRecs 2>&1
+  $fxJson = Join-Path $fxExtractDir 'fixtures-MFT-packed.json'
+  $nonResident = $false
+  $fxResidency = @{}
+  if ((Test-Path $fxJson) -and (Test-Path (Join-Path $fxExtractDir 'fixtures-MFT-packed.bin'))) {
+    $ctxOut = & $py (Join-Path $Root 'e33_mft.py') `
+        --mft (Join-Path $fxExtractDir 'fixtures-MFT-packed.bin') `
+        --packed-json $fxJson `
+        --find-name small --find-name large 2>&1
+    $fxResidency = ($ctxOut | ConvertFrom-Json).contexts
+    foreach ($k in $fxResidency.Keys) {
+      $ctx = $fxResidency[$k]
+      if ($ctx.file_name -eq 'large') { $nonResident = [bool]$ctx.i30_nonresident }
+    }
+    $fxResidency | ConvertTo-Json -Depth 6 |
+        Set-Content -Path (Join-Path $ArtifactDir 'fixture-residency.json') -Encoding UTF8
+    Write-Host ("  large `$I30 non-resident (from MFT): {0}" -f $nonResident)
+    Write-Host ("  small `$I30 non-resident (from MFT): {0}" -f
+        $(($fxResidency.GetEnumerator() | Where-Object { $_.Value.file_name -eq 'small' } |
+           Select-Object -First 1).Value.i30_nonresident))
+  } else {
+    Write-Host "  fixture MFT residency: extraction failed (see tool errors)" -ForegroundColor DarkYellow
+    $script:ToolErrors.Add('fixture MFT residency extraction failed') | Out-Null
+  }
 
   # ------------------------------------------------------- open-handle probe
   function Invoke-NtOpen {
@@ -442,8 +544,11 @@ public static class E33Native {
   }
 
   function Invoke-Candidate {
-    param([string]$Arm, [hashtable]$H, [IntPtr]$FileHandle)
+    param([string]$Arm, [hashtable]$H, [IntPtr]$FileHandle, [string]$Token = '')
     $sw = [Diagnostics.Stopwatch]::StartNew()
+    $ftStart = Get-FtNow
+    $tid = [E33Native]::GetCurrentThreadId()
+    Write-Marker 3 ([string]$Token) | Out-Null
     $status = ''
     switch ($Arm) {
       'A' { $status = 'no-flush' }
@@ -463,6 +568,9 @@ public static class E33Native {
         [void][E33Native]::CloseHandle($kh)
         $status = "win32-root ok=$ok err=$kerr"
       }
+      'M' { $ok = [E33Native]::FlushFileBuffers($H.Dir); $status = "win32-dir-small ok=$ok err=$(ErrOf $ok)" }
+      'N' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFileEx($H.Dir, 0, [IntPtr]::Zero, 0, [ref]$ios); $status = "ntex-dir0-small " + (NT $st) }
+      'O' { $ok = [E33Native]::FlushFileBuffers($H.Stream); $status = "win32-i30-small ok=$ok err=$(ErrOf $ok)" }
       'L' {
         $vh = (Open-Path -Path ('\\.\' + $Volume) -Access $GENERIC_READ -Flags 0).Handle
         $ok = [E33Native]::FlushFileBuffers($vh)
@@ -472,8 +580,16 @@ public static class E33Native {
       }
       default { $status = 'unknown-arm' }
     }
+    $ftEnd = Get-FtNow
+    Write-Marker 4 ([string]$Token) | Out-Null
     $sw.Stop()
-    return @{ Status = $status; Ms = [math]::Round($sw.Elapsed.TotalMilliseconds, 3) }
+    $apiOk = ($status -match 'ok=True|SUCCESS')
+    return @{ Status = $status
+              Ms = [math]::Round($sw.Elapsed.TotalMilliseconds, 3)
+              FtStart = $ftStart
+              FtEnd = $ftEnd
+              ThreadId = $tid
+              ApiOk = [bool]$apiOk }
   }
 
   function Extract-ArmMetadata {
@@ -497,9 +613,9 @@ public static class E33Native {
   }
 
   foreach ($arm in $Arms) {
-    $dir = $fxSmall.Path
-    $dirRecord = $fxSmall.Record
-    if ($arm -in @('F','G','H','I')) { $dir = $fxLarge.Path; $dirRecord = $fxLarge.Record }
+    $dir = $fxLarge.Path
+    $dirRecord = $fxLarge.Record
+    if ($arm -in @('M','N','O')) { $dir = $fxSmall.Path; $dirRecord = $fxSmall.Record }
 
     # ---- setup OUTSIDE the measured window ----
     $renameSrc = Join-Path $dir ("e33_{0}_ren_src.bin" -f $arm)
@@ -523,6 +639,7 @@ public static class E33Native {
     $recNumbers.Add([long]$renSrcRec) | Out-Null
     $recNumbers.Add([long]$delTgtRec) | Out-Null
 
+    Write-Marker 1 ("arm-start:$arm") | Out-Null
     Start-ArmTrace -Name ("e33" + $arm) -Etl $etl
 
     # ---- measured window: namespace ops + candidate flush only ----
@@ -531,46 +648,68 @@ public static class E33Native {
       # create
       $createPath = Join-Path $dir ("e33_{0}_create_{1:D4}.bin" -f $arm, $r)
       $swOp = [Diagnostics.Stopwatch]::StartNew()
+      $ftOpStart = Get-FtNow
       $fh = New-DirtyFile -Path $createPath -Tag ("create-$arm-$r")
+      $ftOpEnd = Get-FtNow
       $swOp.Stop()
       $createMs = [math]::Round($swOp.Elapsed.TotalMilliseconds, 3)
       $creRec = Index-OfHandle $fh
-      $cand = Invoke-Candidate -Arm $arm -H $handles -FileHandle $fh
+      $cand = Invoke-Candidate -Arm $arm -H $handles -FileHandle $fh `
+          -Token ("create:${arm}:$r")
       $opRows.Add([pscustomobject]@{
         Rep = $r; Op = 'create'; Target = $createPath; Record = $creRec
-        OpMs = $createMs; FlushMs = $cand.Ms; FlushStatus = $cand.Status })
+        OpMs = $createMs; FlushMs = $cand.Ms; FlushStatus = $cand.Status
+        OpStartFt = $ftOpStart; OpEndFt = $ftOpEnd
+        FlushStartFt = $cand.FtStart; FlushEndFt = $cand.FtEnd
+        ThreadId = $cand.ThreadId; ApiOk = $cand.ApiOk
+        TargetRecord = $creRec; ParentRecord = $dirRecord })
       if ($creRec -gt 0) { $recNumbers.Add([long]$creRec) | Out-Null }
       [void][E33Native]::CloseHandle($fh)
 
       # rename (same-directory, write-through flag off: the candidate is what we test)
       $renameDst = Join-Path $dir ("e33_{0}_ren_dst_{1:D4}.bin" -f $arm, $r)
       $swOp = [Diagnostics.Stopwatch]::StartNew()
+      $ftOpStart = Get-FtNow
       $ok = [E33Native]::MoveFileExW($renameSrc, $renameDst, [uint32]0)
       $renameErr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      $ftOpEnd = Get-FtNow
       $swOp.Stop()
       $renameMs = [math]::Round($swOp.Elapsed.TotalMilliseconds, 3)
-      $cand = Invoke-Candidate -Arm $arm -H $handles -FileHandle $renH
+      $cand = Invoke-Candidate -Arm $arm -H $handles -FileHandle $renH `
+          -Token ("rename:${arm}:$r")
       $opRows.Add([pscustomobject]@{
         Rep = $r; Op = 'rename'; Target = $renameDst; Record = $renSrcRec
         OpMs = $renameMs; FlushMs = $cand.Ms; FlushStatus = $cand.Status
-        OpOk = $ok; OpErr = $renameErr })
+        OpOk = $ok; OpErr = $renameErr
+        OpStartFt = $ftOpStart; OpEndFt = $ftOpEnd
+        FlushStartFt = $cand.FtStart; FlushEndFt = $cand.FtEnd
+        ThreadId = $cand.ThreadId; ApiOk = $cand.ApiOk
+        TargetRecord = $renSrcRec; ParentRecord = $dirRecord })
       [void][E33Native]::MoveFileExW($renameDst, $renameSrc, [uint32]0)
 
       # delete
       $swOp = [Diagnostics.Stopwatch]::StartNew()
+      $ftOpStart = Get-FtNow
       $ok = [E33Native]::DeleteFileW($deleteTgt)
       $delErr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      $ftOpEnd = Get-FtNow
       $swOp.Stop()
       $deleteMs = [math]::Round($swOp.Elapsed.TotalMilliseconds, 3)
-      $cand = Invoke-Candidate -Arm $arm -H $handles -FileHandle $delH
+      $cand = Invoke-Candidate -Arm $arm -H $handles -FileHandle $delH `
+          -Token ("delete:${arm}:$r")
       $opRows.Add([pscustomobject]@{
         Rep = $r; Op = 'delete'; Target = $deleteTgt; Record = $delTgtRec
         OpMs = $deleteMs; FlushMs = $cand.Ms; FlushStatus = $cand.Status
-        OpOk = $ok; OpErr = $delErr })
+        OpOk = $ok; OpErr = $delErr
+        OpStartFt = $ftOpStart; OpEndFt = $ftOpEnd
+        FlushStartFt = $cand.FtStart; FlushEndFt = $cand.FtEnd
+        ThreadId = $cand.ThreadId; ApiOk = $cand.ApiOk
+        TargetRecord = $delTgtRec; ParentRecord = $dirRecord })
       # recreate the deleted target for the next rep
       $h3 = New-DirtyFile -Path $deleteTgt -Tag "del-re-$arm-$r"
       [void][E33Native]::CloseHandle($h3)
     }
+    Write-Marker 2 ("arm-stop:$arm") | Out-Null
 
     Stop-ArmTrace -Name ("e33" + $arm) -Etl $etl
 

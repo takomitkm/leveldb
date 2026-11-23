@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="E33" Copyright="E33">
+  <Profiles>
+    <EventCollector Id="E33Collector" Name="E33Collector">
+      <BufferSize Value="256"/>
+      <Buffers Value="128"/>
+    </EventCollector>
+    <EventProvider Id="DiskIoProvider" Name="Microsoft-Windows-Kernel-Disk"/>
+    <EventProvider Id="E33MarkerProvider" Name="e33c0de1-0000-4000-8000-00e33c0de100" Level="5"/>
+    <Profile Id="E33Full.Light.File" Name="E33Full" Description="DiskIO + E33 markers" LoggingMode="File" DetailLevel="Light">
+      <Collectors>
+        <EventCollectorId Value="E33Collector">
+          <EventProviders>
+            <EventProviderId Value="DiskIoProvider"/>
+            <EventProviderId Value="E33MarkerProvider"/>
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>
