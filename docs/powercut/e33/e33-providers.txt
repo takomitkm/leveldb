@@ -1,2 +1,0 @@
-"Microsoft-Windows-Kernel-Disk" 0xFFFFFFFF 5
-"{e33c0de1-0000-4000-8000-00e33c0de100}" 0x8000000000000000 5
