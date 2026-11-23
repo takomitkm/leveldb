@@ -404,6 +404,14 @@ public static class E33Native {
 
   # Definitive residency: read the two fixture directory MFT records from the
   # volume and decode $INDEX_ROOT / $INDEX_ALLOCATION attributes.
+  # The volume is flushed first so the on-disk MFT records reflect the
+  # fixtures (the raw read bypasses NTFS's cache); this happens before any
+  # measured window, so it does not perturb the arms.
+  $flushH = (Open-Path -Path ($Volume + '') -Access $ACCESS_DIR_RW -Flags $BACKUP_SEM).Handle
+  if ($flushH -ne [IntPtr]::Zero) {
+    [void][E33Native]::FlushFileBuffers($flushH)
+    [void][E33Native]::CloseHandle($flushH)
+  }
   $fxExtractDir = Join-Path $metaDir 'fixtures'
   New-Item -ItemType Directory -Force -Path $fxExtractDir | Out-Null
   $fxRecs = @([long]$fxSmall.Record, [long]$fxLarge.Record) -join ','
@@ -418,16 +426,16 @@ public static class E33Native {
         --packed-json $fxJson `
         --find-name small --find-name large 2>&1
     $fxResidency = ($ctxOut | ConvertFrom-Json).contexts
-    foreach ($k in $fxResidency.Keys) {
-      $ctx = $fxResidency[$k]
+    $smallNonResident = $null
+    foreach ($prop in $fxResidency.PSObject.Properties) {
+      $ctx = $prop.Value
       if ($ctx.file_name -eq 'large') { $nonResident = [bool]$ctx.i30_nonresident }
+      if ($ctx.file_name -eq 'small') { $smallNonResident = [bool]$ctx.i30_nonresident }
     }
     $fxResidency | ConvertTo-Json -Depth 6 |
         Set-Content -Path (Join-Path $ArtifactDir 'fixture-residency.json') -Encoding UTF8
     Write-Host ("  large `$I30 non-resident (from MFT): {0}" -f $nonResident)
-    Write-Host ("  small `$I30 non-resident (from MFT): {0}" -f
-        $(($fxResidency.GetEnumerator() | Where-Object { $_.Value.file_name -eq 'small' } |
-           Select-Object -First 1).Value.i30_nonresident))
+    Write-Host ("  small `$I30 non-resident (from MFT): {0}" -f $smallNonResident)
   } else {
     Write-Host "  fixture MFT residency: extraction failed (see tool errors)" -ForegroundColor DarkYellow
     $script:ToolErrors.Add('fixture MFT residency extraction failed') | Out-Null
