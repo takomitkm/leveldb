@@ -71,6 +71,8 @@ sync — the last entry this table ever held, and the Windows counterpart of
 [#195](https://github.com/google/leveldb/issues/195) — was fixed in this
 fork on 2026-11-04 (see table A). Upstream still has both gaps.
 
+**E33 (2026-11-24):** [the latest tier-1 experiment](docs/powercut/E33-RESULTS.md) decoded the exact `$LogFile` index records for create/rename/delete and attributed their log-page writes and flush barriers to 12 handle/API combinations. It showed that the explicit `$I30:$INDEX_ALLOCATION` stream handle *is* openable (with `FILE_FLAG_BACKUP_SEMANTICS`), and that the parent-directory flush reaches L3 (log records behind a barrier) but no arm reaches L4 (no `$I30` home-page write). Recovery across an actual power cut (L5) remains untested.
+
 **Checked and found consistent** (so nobody has to audit them again): file
 mapping (both use mmap — `CreateFileMappingW`/`MapViewOfFile` on Windows),
 `SleepForMicroseconds` (both `std::this_thread::sleep_for`), `GetChildren`
