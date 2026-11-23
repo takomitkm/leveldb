@@ -182,7 +182,8 @@ public static class E33Native {
     [void][E33Native]::FlushFileBuffers($FileHandle)
     if ($DirHandle -ne [IntPtr]::Zero) {
       [void][E33Native]::FlushFileBuffers($DirHandle)
-      [void][E33Native]::FlushFileBuffers($Volume + '\')  # the E17 root flush
+      $rootH = (Open-Path -Path ($Volume + '\') -Access $ACCESS_DIR_RW -Flags $BACKUP_SEM).Handle
+      if ($rootH -ne [IntPtr]::Zero) { [void][E33Native]::FlushFileBuffers($rootH); [void][E33Native]::CloseHandle($rootH) }  # the E17 root flush
     }
   }
 
@@ -277,7 +278,7 @@ public static class E33Native {
       'H' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFileEx($H.Stream, 0, [IntPtr]::Zero, 0, [ref]$ios); $status = "ntex-i30-0 " + (NT $st) }
       'I' { $ios = New-Object E33Native+IoStatusBlock; $st = [E33Native]::NtFlushBuffersFileEx($H.Stream, 8, [IntPtr]::Zero, 0, [ref]$ios); $status = "ntex-i30-8 " + (NT $st) }
       'J' { $ok = [E33Native]::FlushFileBuffers($H.LogFile); $status = "win32-logfile ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
-      'K' { $ok = [E33Native]::FlushFileBuffers(($Volume + '\')); $status = "win32-root ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
+      'K' { $kh = (Open-Path -Path ($Volume + '\') -Access $ACCESS_DIR_RW -Flags $BACKUP_SEM).Handle; $ok = [E33Native]::FlushFileBuffers($kh); $kerr = $(if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }); [void][E33Native]::CloseHandle($kh); $status = "win32-root ok=$ok err=$kerr" }
       'L' { $dev = "\\.\$Volume"; $ok = [E33Native]::FlushFileBuffers((Open-Path -Path $dev -Access $GENERIC_READ -Flags 0).Handle); $status = "win32-volume ok=$ok err=$((if (-not $ok) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }))" }
       default { $status = 'unknown-arm' }
     }
