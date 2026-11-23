@@ -574,47 +574,101 @@ class LogFileParser:
         return client_data, record_type, (client_seq << 16) | client_idx, transaction_id
 
     def walk_chains(self) -> List[dict]:
-        """Walk every client chain reachable from the restart LSNs and dump records.
+        """Decode all client log records found in the $LogFile image.
 
-        Returns a list of dicts, one per client log record, in walk order.
+        Following only the client restart LSN chain misses records written
+        after the restart point (exactly the records E33 cares about).  We
+        therefore scan every RCRD page for LFS record headers, validate each
+        LSN by self-match, and decode the client data.  Records are returned
+        in (page, offset) order; that is physical log order and enough for
+        attributing index operations.
         """
-        restart = self._client_restart_lsn()
         oat = OpenAttrTable(self.oat_version)
         records: List[dict] = []
         seen = set()
-        lsn = restart
-        hops = 0
-        limit = 4000000
-        while lsn and hops < limit:
-            hops += 1
-            if lsn in seen:
-                break
-            seen.add(lsn)
-            got = self.read_client_data(lsn)
-            if got is None:
-                break
-            client_data, record_type, client_id, transaction_id = got
-            if record_type == LFS_CLIENT_RESTART:
-                try:
-                    cr = ClientRestart(client_data)
-                    self.oat_version = cr.major
-                except LogFileError:
-                    pass
-                lsn = self._next_in_chain(lsn, page_hint=None)
+        page_count = len(self.data) // self.page_size
+        for page_no in range(2, page_count):
+            page = self.page_by_number(page_no)
+            if page is None or page.magic != RCRD:
                 continue
-            try:
-                rec = ClientLogRecord(client_data, lsn, client_id, transaction_id,
-                                      self.cluster_size)
-            except LogFileError:
-                break
-            if rec.redo_op == OP_OPEN_NONRESIDENT_ATTRIBUTE:
-                oat.apply_open(rec)
-            records.append(self._record_to_dict(rec, oat))
-            nxt = self._next_in_chain(lsn, page_hint=None)
-            if nxt is None:
-                break
-            lsn = nxt
+            off = page.data_offset
+            limit = page.next_record_off() or 4096
+            if limit <= off or limit > 4096:
+                limit = 4096
+            while off + self.record_header_len <= limit:
+                try:
+                    this_lsn, raw = page.header_at(off, self.record_header_len)
+                except LogFileError:
+                    break
+                data_len = struct.unpack_from("<I", raw, 24)[0]
+                record_type = struct.unpack_from("<I", raw, 32)[0]
+                client_seq, client_idx = struct.unpack_from("<HH", raw, 28)
+                txn = struct.unpack_from("<I", raw, 36)[0]
+                if (this_lsn == 0 or data_len == 0 or
+                        data_len > 0x100000 or
+                        record_type not in (LFS_CLIENT_RECORD,
+                                            LFS_CLIENT_RESTART)):
+                    step = self.record_header_len
+                    off += step
+                    continue
+                # Assemble client data, following spill pages when needed.
+                client_data = self._client_data_from_page(page, off, data_len)
+                if client_data is not None and this_lsn not in seen:
+                    seen.add(this_lsn)
+                    if record_type == LFS_CLIENT_RESTART:
+                        try:
+                            cr = ClientRestart(client_data)
+                            if len(cr.buf) >= 8:
+                                self.oat_version = cr.major
+                        except (LogFileError, struct.error):
+                            pass
+                    else:
+                        try:
+                            rec = ClientLogRecord(
+                                client_data, this_lsn,
+                                (client_seq << 16) | client_idx, txn,
+                                self.cluster_size)
+                        except (LogFileError, struct.error):
+                            rec = None
+                        if rec is not None:
+                            if rec.redo_op == OP_OPEN_NONRESIDENT_ATTRIBUTE:
+                                oat.apply_open(rec)
+                            records.append(self._record_to_dict(rec, oat))
+                step = self.record_header_len + ((data_len + 7) & ~7)
+                if step <= 0:
+                    step = self.record_header_len
+                off += step
         return records
+
+    def _client_data_from_page(self, page: LogPage, off: int,
+                               data_len: int) -> Optional[bytes]:
+        """Read client data for the LFS record at page[off]."""
+        if off + self.record_header_len > len(page.buf):
+            return None
+        in_page = min(data_len,
+                      self.page_size - off - self.record_header_len)
+        try:
+            head = page.client_data_at(off, self.record_header_len, in_page)
+        except LogFileError:
+            return None
+        if in_page >= data_len:
+            return head
+        data = bytearray(head)
+        remaining = data_len - len(head)
+        pno = page.page_number
+        while remaining > 0:
+            pno += 1
+            if pno * self.page_size >= len(self.data):
+                pno = self.first_page
+            np_ = self.page_by_number(pno)
+            if np_ is None:
+                return None
+            chunk = np_.buf[np_.data_offset:np_.data_offset + remaining]
+            if not chunk:
+                return None
+            data.extend(chunk)
+            remaining -= len(chunk)
+        return bytes(data)
 
     def _client_restart_lsn(self) -> int:
         """Find the client restart LSN by scanning the restart areas' client records.
@@ -910,6 +964,8 @@ def main() -> int:
                     help="emit the aggregated summary JSON")
     ap.add_argument("--selftest", action="store_true",
                     help="run the synthetic round trip and exit")
+    ap.add_argument("--name-filter", action="append", default=[],
+                    help="only emit index records whose decoded name contains this substring")
     args = ap.parse_args()
 
     if args.selftest:
@@ -926,6 +982,15 @@ def main() -> int:
     summary = summarize(records)
     if args.json:
         for r in records:
+            if args.name_filter and r.get("index_op"):
+                names = []
+                for key in ("index_entry", "undo_index_entry"):
+                    ent = r.get(key) or {}
+                    if ent.get("file_name"):
+                        names.append(ent["file_name"])
+                if not any(any(f in nm for nm in names)
+                           for f in args.name_filter):
+                    continue
             print(json.dumps(r, ensure_ascii=False))
     if args.summary:
         slim = {k: v for k, v in summary.items() if k != "index_records"}
