@@ -98,12 +98,16 @@ def attr_header_size(attr: bytes) -> int:
 
 
 class MftImage:
-    """A parsed raw $MFT image."""
+    """A parsed raw $MFT image, or a packed list of selected records."""
 
-    def __init__(self, data: bytes, cluster_size: int = 4096):
+    packed_numbers: Optional[List[int]] = None
+
+    def __init__(self, data: bytes, cluster_size: int = 4096,
+                 packed_numbers: Optional[List[int]] = None):
         self.data = data
         self.cluster_size = cluster_size
         self.record_size = MFT_RECORD_SIZE
+        self.packed_numbers = packed_numbers
         # Detect the record size from the first record's fixup count.
         if len(data) >= 2 * 1024:
             cnt = struct.unpack_from("<H", data, 6)[0]
@@ -115,7 +119,30 @@ class MftImage:
                     self.record_size = guess
         self.count = len(data) // self.record_size
 
+    @classmethod
+    def from_packed(cls, data: bytes, numbers: List[int],
+                    record_size: int, cluster_size: int = 4096):
+        """Build an image over a packed list of raw MFT records."""
+        inst = cls(data, cluster_size, packed_numbers=list(numbers))
+        inst.record_size = record_size
+        inst.count = len(numbers)
+        return inst
+
     def record(self, number: int) -> Optional[bytearray]:
+        if self.packed_numbers is not None:
+            if number not in self.packed_numbers:
+                return None
+            slot = self.packed_numbers.index(number)
+            start = slot * self.record_size
+            raw = bytearray(self.data[start:start + self.record_size])
+            if len(raw) != self.record_size:
+                return None
+            if bytes(raw[:4]) not in (b"FILE", b"BAAD"):
+                return None
+            try:
+                return apply_fixups(raw, self.record_size)
+            except MftError:
+                return raw
         if number < 0 or number >= self.count:
             return None
         start = number * self.record_size
@@ -191,9 +218,11 @@ class MftImage:
             svcn, evcn = struct.unpack_from("<QQ", attr, 0x10)
             run_off = struct.unpack_from("<H", attr, 0x20)[0]
             alloc = struct.unpack_from("<Q", attr, 0x28)[0]
+            data_size = struct.unpack_from("<Q", attr, 0x30)[0]
             entry["svcnn"] = svcn
             entry["evcn"] = evcn
             entry["alloc_size"] = alloc
+            entry["data_size"] = data_size
             try:
                 entry["runs"] = [(v, l) for v, l in
                                  parse_run_list(attr, run_off)]
@@ -287,6 +316,14 @@ class MftImage:
 
     def find_by_name(self, wanted: str, limit: int = 64) -> List[int]:
         hits: List[int] = []
+        if self.packed_numbers is not None:
+            for n in self.packed_numbers:
+                rec = self.record(n)
+                if rec is None or not self.record_flag_in_use(rec):
+                    continue
+                if self.file_name(rec) == wanted:
+                    hits.append(n)
+            return hits
         for n in range(min(limit, self.count)):
             rec = self.record(n)
             if rec is None or not self.record_flag_in_use(rec):

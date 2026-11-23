@@ -490,8 +490,8 @@ class LogFileParser:
             magic = bytes(buf[:4])
             if magic != RSTR:
                 return None
+            minor = struct.unpack_from("<H", buf, 26)[0]
             major = struct.unpack_from("<H", buf, 28)[0]
-            minor = struct.unpack_from("<H", buf, 30)[0]
             ra_off = struct.unpack_from("<H", buf, 24)[0]
             ra_raw = bytes(buf[ra_off:])
             return (major, minor, ra_off, ra_raw)
@@ -794,8 +794,8 @@ def selftest() -> int:
     struct.pack_into("<I", rp, 16, page_size)  # system page size
     struct.pack_into("<I", rp, 20, page_size)  # log page size
     struct.pack_into("<H", rp, 24, ra_base)  # restart area offset
+    struct.pack_into("<H", rp, 26, 1)     # minor 1.1
     struct.pack_into("<H", rp, 28, 1)     # major 1.1
-    struct.pack_into("<H", rp, 30, 1)
     ra = rp[ra_base:ra_base + 0x40]
     # RESTART_AREA: current_lsn(8) clients(2) free(2) inuse(2) flags(2)
     # seq_bits(4) ra_len(2) client_arr_off(2) file_size(8) last_len(4)
