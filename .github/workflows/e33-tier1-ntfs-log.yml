@@ -1,0 +1,86 @@
+name: e33-tier1-ntfs-log
+
+# E33 Tier-1: NTFS $LogFile flush attribution for directory-index changes.
+# Per-arm wpr DiskIO ETW sessions, $MFT/$LogFile extraction, offline decoding.
+# Runtime ~15-25 minutes depending on reps.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e33-tier1-ntfs-log.yml'
+      - 'docs/powercut/e33/**'
+
+jobs:
+  e33:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk |
+            Select-Object DeviceID, FileSystem, DriveType,
+              @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} |
+            Format-Table | Out-String | Write-Host
+
+      - name: Python decoder selftests
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e33/e33_logfile_decode.py --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py docs/powercut/e33/e33_mft.py --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run E33 arms
+        shell: pwsh
+        run: |
+          & (Join-Path $pwd 'docs/powercut/e33/run-e33.ps1') `
+              -Volume D: -Reps 20 -NoPause
+          $code = $LASTEXITCODE
+          Write-Host "E33 script exit: $code"
+          if ($code -ne 0) { exit $code }
+
+      - name: ETW counts
+        if: always()
+        shell: pwsh
+        run: |
+          $art = Get-ChildItem -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e33/e33_etw_analyze.py `
+            --etw-dir (Join-Path $art.FullName 'etw') `
+            --out (Join-Path $art.FullName 'etw-summary.json') `
+            --csv (Join-Path $art.FullName 'etw-summary.csv')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Decode $LogFile images
+        if: always()
+        shell: pwsh
+        run: |
+          $art = Get-ChildItem -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e33/e33_integrate.py `
+            --artifacts $art.FullName `
+            --out (Join-Path $art.FullName 'E33-evidence.json')
+          if ($LASTEXITCODE -ne 0) { Write-Host "integrator exit $LASTEXITCODE" }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e33-artifacts-${{ github.run_id }}
+          path: |
+            e33-artifacts-*/
+            docs/powercut/e33/e33-report-*.txt
+            docs/powercut/e33/e33-log-*.txt
+          if-no-files-found: warn
