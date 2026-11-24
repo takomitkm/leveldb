@@ -149,7 +149,8 @@ def _info(**kw):
             "final_name": "e34.bin", "dir_record": 815,
             "op_status": "ok", "op_err": 0,
             "flush_status": "win32-dir", "flush_ok": True,
-            "api_returned_success": True, "payload": 4096}
+            "api_returned_success": True, "candidate_flush_attempted": True,
+            "payload": 4096}
     base.update(kw)
     return base
 
@@ -247,6 +248,19 @@ def test_classification():
         {"dir_readable": True, "expected_present": False}, True)
     check("a failed flush is not counted as a lost operation",
           v["class"] == "R3", v)
+
+    # arm A (no candidate flush) is classified by outcome: a missing entry is
+    # a lost confirmed operation, not a free R3.
+    v = recover.classify(
+        _info(arm="A", api_returned_success=True, flush_ok=None,
+              flush_status="no-flush", candidate_flush_attempted=True), pre_ok,
+        {"dir_readable": True, "expected_present": False}, True)
+    check("arm A losing the entry is R1", v["class"] == "R1", v)
+    v = recover.classify(
+        _info(arm="A", api_returned_success=True, flush_ok=None,
+              flush_status="no-flush", candidate_flush_attempted=True), pre_ok,
+        {"dir_readable": True, "expected_present": True}, True)
+    check("arm A keeping the entry is R4", v["class"] == "R4", v)
 
 
 # ------------------------------------------------------------- statistics

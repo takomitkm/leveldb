@@ -168,12 +168,49 @@ static char FindDataVolume() {
   return 0;
 }
 
+/* The manifest lives on its own small volume (label E34LOG), never on the
+ * tested volume: a manifest write there would add an index entry to the very
+ * directory tree being measured.  The host polls the volume image for the
+ * E34DONE marker and cuts the power. */
+static char FindManifestVolume() {
+  for (char c = 'C'; c <= 'Z'; ++c) {
+    char root[4] = {c, ':', '\\', 0};
+    char lbl[64] = {0};
+    char fs[16] = {0};
+    if (GetVolumeInformationA(root, lbl, sizeof lbl, nullptr, nullptr,
+                              nullptr, fs, sizeof fs)) {
+      if (_stricmp(lbl, "E34LOG") == 0) return c;
+    }
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------- serial channel */
 static HANDLE g_serial = INVALID_HANDLE_VALUE;
 
 static void OpenSerial() {
-  g_serial = CreateFileA("\\.\COM1", GENERIC_WRITE, FILE_SHARE_READ,
-                         nullptr, OPEN_EXISTING, 0, nullptr);
+  g_serial = CreateFileA("COM1", GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                         0, nullptr);
+  if (g_serial == INVALID_HANDLE_VALUE) return;
+  /* A raw-handle open ships with baud 0; without an explicit DCB the
+   * WriteFile calls fail silently.  9600/8N1 matches QEMU's 16550. */
+  DCB dcb;
+  memset(&dcb, 0, sizeof dcb);
+  dcb.DCBlength = sizeof dcb;
+  if (GetCommState(g_serial, &dcb)) {
+    dcb.BaudRate = 9600;
+    dcb.ByteSize = 8;
+    dcb.Parity = NOPARITY;
+    dcb.StopBits = ONESTOPBIT;
+    dcb.fBinary = TRUE;
+    dcb.fDtrControl = DTR_CONTROL_DISABLE;
+    dcb.fOutxCtsFlow = FALSE;
+    dcb.fOutxDsrFlow = FALSE;
+    dcb.fInX = FALSE;
+    dcb.fOutX = FALSE;
+    dcb.fRtsControl = RTS_CONTROL_DISABLE;
+    SetCommState(g_serial, &dcb);
+  }
 }
 
 static void SerialWrite(const char* data, size_t len) {
@@ -204,8 +241,10 @@ void Emit(const char* ev, const char* fmt, ...) {
                    ev, ticks, GetCurrentThreadId(), GetCurrentProcessId(), body);
   if (n <= 0) return;
   g_event_log += line;
-  SendAll(line, (size_t)n);   /* TCP channel (CI rehearsal) */
   SerialWrite(line, (size_t)n); /* COM1 channel (the QEMU rig) */
+  if (g_sock != INVALID_SOCKET) {
+    SendAll(line, (size_t)n);   /* TCP channel (CI rehearsal) */
+  }
 }
 
 std::string WideToUtf8(const wchar_t* w) {
@@ -398,6 +437,7 @@ int main() {
   std::string sb_op = SmbiosField("OP=");
   std::string sb_topo = SmbiosField("TOPO=");
   std::string sb_trial = SmbiosField("TRIAL=");
+  std::string sb_mode = SmbiosField("MODE=");
   if (!sb_arm.empty()) arm = sb_arm;
   if (!sb_op.empty()) op = sb_op;
   if (arm.empty()) arm = "A";
@@ -417,8 +457,16 @@ int main() {
     snprintf(d, sizeof d, "%c:\\e34\\%s", dv,
              topo == "small" ? "small" : "large");
     dir = d;
-    CreateDirectoryA((std::string(1, dv) + ":\\e34").c_str(), nullptr);
-    CreateDirectoryA(dir.c_str(), nullptr);
+    /* The target directory is pre-baked in the baseline disk and is NOT
+     * created here: creating it would add an index entry to the very
+     * directory tree under measurement.  If it is missing, the trial is
+     * invalid. */
+    HANDLE probe = OpenDirectory(Utf8ToWide(dir));
+    if (probe == INVALID_HANDLE_VALUE) {
+      Emit("fatal", "\"reason\":\"target directory missing; trial invalid\"");
+      return 3;
+    }
+    CloseHandle(probe);
   }
   if (name.empty()) {
     std::string trial = sb_trial.empty() ? std::string("1") : sb_trial;
@@ -439,6 +487,88 @@ int main() {
   std::wstring wname = Utf8ToWide(name);
   std::wstring wpath = wdir + L"\\" + wname;
   DWORD payload = (DWORD)strtoul(payload_s.c_str(), nullptr, 10);
+
+  /* Recovery mode: the guest boots on the CRASHED volume, Windows performs
+   * its own NTFS log replay when the volume is mounted, and the probe then
+   * reports the recovered namespace over the external channel.  This is the
+   * E34-PLAN section 10 procedure; the probe must not repair anything. */
+  if (sb_mode == "recover") {
+    Emit("recover_start", "\"dir\":\"%s\",\"expect\":\"%s\"",
+         JsonEscape(dir).c_str(), JsonEscape(name).c_str());
+    HANDLE d = OpenDirectory(wdir);
+    if (d == INVALID_HANDLE_VALUE) {
+      Emit("recover_result", "\"ok\":false,\"err\":%lu,\"present\":false",
+           GetLastError());
+    } else {
+      WIN32_FIND_DATAW fd;
+      HANDLE find = FindFirstFileW((wdir + L"\\*").c_str(), &fd);
+      int count = 0;
+      int present = 0;
+      while (find != INVALID_HANDLE_VALUE) {
+        std::wstring wn = fd.cFileName;
+        if (wn != L"." && wn != L"..") {
+          count++;
+          if (wn == wname) present = 1;
+          std::string n8 = WideToUtf8(wn.c_str());
+          Emit("recover_entry", "\"name\":\"%s\",\"size\":%lu,\"dir\":%d",
+               JsonEscape(n8).c_str(), (unsigned long)fd.nFileSizeLow,
+               (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0);
+        }
+        if (!FindNextFileW(find, &fd)) break;
+      }
+      if (find != INVALID_HANDLE_VALUE) FindClose(find);
+      /* Read the payload back, if the file is there. */
+      unsigned long long fsize = 0;
+      HANDLE fh = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING, 0, nullptr);
+      if (fh != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER li;
+        if (GetFileSizeEx(fh, &li)) fsize = (unsigned long long)li.QuadPart;
+        CloseHandle(fh);
+      }
+      Emit("recover_result",
+           "\"ok\":true,\"present\":%d,\"entries\":%d,\"size\":%llu",
+           present ? 1 : 0, count, fsize);
+      CloseHandle(d);
+    }
+    /* Write the recovery manifest to the external volume and stop. */
+    {
+      std::string manifest = g_event_log;
+      char lv = FindManifestVolume();
+      if (lv) {
+        std::string mpath = std::string(1, lv) + ":\\recover-" + arm + "-" +
+                            op + "-" + name + ".jsonl";
+        HANDLE mh = CreateFileA(mpath.c_str(), GENERIC_WRITE,
+                                FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                                nullptr);
+        if (mh != INVALID_HANDLE_VALUE) {
+          DWORD w = 0;
+          WriteFile(mh, manifest.data(), (DWORD)manifest.size(), &w, nullptr);
+          FlushFileBuffers(mh);
+          CloseHandle(mh);
+        }
+        std::string dpath = std::string(1, lv) + ":\\E34DONE";
+        HANDLE dh = CreateFileA(dpath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                                nullptr);
+        if (dh != INVALID_HANDLE_VALUE) {
+          const char* tag = "E34DONE";
+          DWORD w = 0;
+          WriteFile(dh, tag, (DWORD)strlen(tag), &w, nullptr);
+          FlushFileBuffers(dh);
+          CloseHandle(dh);
+        }
+      }
+      Emit("E34DONE", "\"arm\":\"%s\",\"op\":\"%s\"", arm.c_str(),
+           op.c_str());
+    }
+    WaitForCrash(120);
+    closesocket(g_sock);
+    WSACleanup();
+    return 0;
+  }
 
   Emit("trial_start",
        "\"arm\":\"%s\",\"op\":\"%s\",\"name\":\"%s\",\"dir\":\"%s\",\"payload\":%lu",
@@ -480,7 +610,9 @@ int main() {
     } else {
       std::string blob(payload, 'E');
       if (payload) WriteAll(h, blob.data(), payload);
-      FlushFileBuffers(h);
+      /* Do NOT flush the file here: arm A is the no-candidate-flush control
+       * and arm B is defined as FlushFileBuffers(target file).  An
+       * unconditional file-level flush would make arm A identical to arm B. */
       std::string ident = FileIdentity(h);
       Emit("op_end", "\"op\":\"create\",\"status\":\"ok\",%s", ident.c_str());
       Emit("flush_start", "\"arm\":\"%s\"", arm.c_str());
@@ -539,16 +671,20 @@ int main() {
        arm.c_str(), op.c_str(), op_status.c_str(), op_err,
        JsonEscape(final_name).c_str());
 
-  /* Fallback channel: a WRITE_THROUGH manifest on the data volume.  The host
-   * polls the blklogwrites journal for the marker and then cuts the power;
-   * the manifest itself is recovered from the pre-recovery image copy. */
+  /* External evidence channel (E34-PLAN section 8).  The manifest must NOT
+   * be on the tested volume -- writing it there would add an index entry to
+   * the very directory tree under measurement.  Write it to the dedicated
+   * E34LOG volume, flush it, then touch a small E34DONE marker that the host
+   * polls on that same independent volume image. */
   {
-    /* g_event_log lives in the anonymous namespace above and is visible
-     * here by unqualified lookup. */
     std::string manifest = g_event_log;
-    if (dv) {
-      std::string mpath = std::string(1, dv) + ":\\e34\\manifest-" +
-                          arm + "-" + op + ".txt";
+    char lv = FindManifestVolume();
+    if (lv) {
+      char mdir[8] = {lv, ':', '\\', 0};
+      CreateDirectoryA(mdir, nullptr);
+      /* The JSON event log is the ledger-grade manifest. */
+      std::string mpath = std::string(1, lv) + ":\\manifest-" +
+                          arm + "-" + op + "-" + name + ".jsonl";
       HANDLE mh = CreateFileA(mpath.c_str(), GENERIC_WRITE,
                               FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
@@ -559,6 +695,25 @@ int main() {
         FlushFileBuffers(mh);
         CloseHandle(mh);
       }
+      /* The marker is written LAST, after the manifest is durable, so the
+       * host cutting power on seeing it cannot race the manifest write. */
+      std::string dpath = std::string(1, lv) + ":\\E34DONE";
+      HANDLE dh = CreateFileA(dpath.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                              nullptr);
+      if (dh != INVALID_HANDLE_VALUE) {
+        const char* tag = "E34DONE";
+        DWORD w = 0;
+        WriteFile(dh, tag, (DWORD)strlen(tag), &w, nullptr);
+        FlushFileBuffers(dh);
+        CloseHandle(dh);
+      }
+    } else {
+      /* No independent volume: emit the marker over the external channels
+       * only.  The host sees nothing in that case and the trial is invalid
+       * (RX), rather than silently writing evidence to the tested volume. */
+      Emit("fatal", "\"reason\":\"no E34LOG manifest volume; evidence chain invalid\"");
     }
     Emit("E34DONE", "\"arm\":\"%s\",\"op\":\"%s\"", arm.c_str(),
          op.c_str());
