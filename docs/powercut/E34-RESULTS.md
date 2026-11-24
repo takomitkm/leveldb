@@ -65,14 +65,12 @@ The interesting part is not only whether the entry survived, but *how*:
 | Arm | Survived | Survivors already on the platter | Survivors restored by replay | Lost |
 |---|---|---|---|---|
 | **A** | 5 / 12 | **5** (every survivor) | 0 | 7 / 12 |
-| **B** | 10 / 10 | see note | see note | 0 / 10 |
+| **B** | 10 / 10 | 2 | **8** | 0 / 10 |
 | **C** | 10 / 10 | 3 | **7** | 0 / 10 |
 
-The raw namespace was checked on **all 22** pre-recovery images of arms A and C
-(one image at a time, `dump-namespaces.py`), so those rows are complete, not a
-sample. Arm B's namespace dump was still running when this file was written;
-its 10 R4 classes already rest on the recovery listing plus the
-`positively identified` `$LogFile` record for all 10 trials.
+The raw namespace was checked on **all 32** pre-recovery images of arms A, B
+and C (one image at a time, `dump-namespaces.py`), so this table is complete,
+not a sample.
 
 So the two arms reach the same "survived" state by different routes:
 
@@ -93,8 +91,10 @@ So the two arms reach the same "survived" state by different routes:
   entry.
 * **arm B** (`FlushFileBuffers(target file)`) also never lost, 10/10, and its
   pre-recovery decode carries the same `AddIndexEntryRoot` record for every
-  trial. That is the same mechanism: NTFS has one log per volume, so flushing
-  the file commits the log entries the index operation had already written.
+  trial. Its raw namespace was empty in 8 of 10, so it too came back mostly
+  through replay. That is the same mechanism: NTFS has one log per volume, so
+  flushing the file commits the log entries the index operation had already
+  written.
 
 Taken together, the three flush arms are indistinguishable on this metric
 under this crash model — what matters is that **some** flush commits the

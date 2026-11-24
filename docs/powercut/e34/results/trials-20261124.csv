@@ -11,16 +11,16 @@ A-create-large-207,A,create,C:\e34\large,R1,,no-flush,True,False,False,overwritt
 A-create-large-208,A,create,C:\e34\large,R1,,no-flush,True,False,False,overwritten
 A-create-large-209,A,create,C:\e34\large,R1,,no-flush,True,False,False,overwritten
 A-create-large-210,A,create,C:\e34\large,R1,,no-flush,True,False,False,overwritten
-B-create-large-301,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-302,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-303,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-304,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-305,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-306,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-307,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-308,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-309,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
-B-create-large-310,B,create,C:\e34\large,R4,unknown,win32-file,True,True,,positively identified
+B-create-large-301,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-302,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-303,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-304,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-305,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-306,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-307,B,create,C:\e34\large,R4,already durable,win32-file,True,True,True,positively identified
+B-create-large-308,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
+B-create-large-309,B,create,C:\e34\large,R4,already durable,win32-file,True,True,True,positively identified
+B-create-large-310,B,create,C:\e34\large,R4,replayed,win32-file,True,True,False,positively identified
 C-create-large-201,C,create,C:\e34\large,R4,replayed,win32-dir,True,True,False,positively identified
 C-create-large-202,C,create,C:\e34\large,R4,already durable,win32-dir,True,True,True,positively identified
 C-create-large-203,C,create,C:\e34\large,R4,replayed,win32-dir,True,True,False,positively identified
