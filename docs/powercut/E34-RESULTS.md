@@ -46,10 +46,10 @@ Both batches are arm/operation/topology cells of the same harness
 
 Classes (E34-PLAN.md §11), per trial, no merging:
 
-| Arm | R1 (confirmed op lost) | R3 | R4 (correct namespace + log evidence) | Total |
-|---|---|---|---|---|
-| **A** | **7** | 0 | 5 | 12 |
-| **C** | 0 | 0 | **10** | 10 |
+| Arm | R1 (confirmed op lost) | R3 | R4 (correct namespace + log evidence) | Total | Zero-failure bound |
+|---|---|---|---|---|---|
+| **A** | **7** | 0 | 5 | 12 | n/a (7 failures) |
+| **C** | 0 | 0 | **10** | 10 | `p <= 25.9%` (1 - 0.05^(1/10)) |
 
 Every trial in both arms had an intact evidence chain: external manifest on
 the E34LOG volume, pre-recovery image kept (SHA-256 recorded on the rig),
@@ -60,24 +60,35 @@ replay.
 
 The interesting part is not only whether the entry survived, but *how*:
 
-| Arm | Survived | Of the survivors: already on the platter | Of the survivors: restored by replay |
-|---|---|---|---|
-| **A** | 5 / 12 | at least 1 (`A-202`; raw namespace already held the name) | not yet determined for the rest |
-| **C** | 10 / 10 | 0 of the sampled trials | **`C-201` and `C-210`: the raw namespace was empty and the name appeared only after Windows replayed the log** |
+| Arm | Survived | Survivors already on the platter | Survivors restored by replay | Lost |
+|---|---|---|---|---|
+| **A** | 5 / 12 | **5** (every survivor) | 0 | 7 / 12 |
+| **C** | 10 / 10 | 3 | **7** | 0 / 10 |
+
+The raw namespace was checked on **all 22** pre-recovery images (one image at a
+time, `dump-namespaces.py`), so this table is complete, not a sample.
 
 So the two arms reach the same "survived" state by different routes:
 
-* **arm A** is a coin flip: 7 of 12 trials lost the confirmed create outright
-  (`present=0, entries=0` after the recovery boot), which is what a namespace
-  change that depends on NTFS writeback timing looks like;
-* **arm C** did **not** put the index entry on the platter either — the raw
-  namespace of the sampled trials was empty — but the parent-directory flush
-  made the `$LogFile` record durable, and **NTFS's own replay reconstructed
-  the entry**. The flush's value is the log barrier, not an index-page write.
+* **arm A is a coin flip.** 7 of 12 trials lost the confirmed create outright
+  (`present=0, entries=0` after the recovery boot) and their raw namespace was
+  empty too — no log record survived, so replay had nothing to restore. The 5
+  survivors all had the entry **already on the platter**; replay never rescued
+  an arm A loss. That is what a namespace change left to NTFS writeback timing
+  looks like.
+* **arm C never lost, and mostly by a different mechanism.** In 7 of the 10
+  trials the raw namespace was **empty** — the parent-directory flush did not
+  put the index entry on the platter — yet the name was there after Windows
+  replayed the log. The other 3 already had it on the platter. So the flush's
+  value is the **`$LogFile` barrier**, not an index-page write: it makes the
+  `AddIndexEntryRoot` record durable, and NTFS's own replay reconstructs the
+  entry.
 
 That distinction is exactly the E34 question, and it is not visible from a
 directory listing alone; it required the raw-namespace dump on the
-pre-recovery image.
+pre-recovery image. It also lines up with E33.1: the parent-directory flush
+reached the log pages with a barrier (L3) but never wrote the `$I30` home page
+(no L4) — E34 shows what that combination is worth after a power cut.
 
 ## What this does and does not establish
 
@@ -90,8 +101,9 @@ pre-recovery image.
 * The no-flush control lost the same confirmed create in **7/12** trials, so
   the harness discriminates and the result is not "everything always
   survives".
-* The recovery route for arm C was log replay, not a direct index write: the
-  raw namespace was empty on the sampled trials.
+* The recovery route for most arm C trials was log replay, not a direct index
+  write: in 7 of 10 the raw namespace was empty and only the replay produced
+  the name.
 
 **Not established:**
 
