@@ -100,7 +100,7 @@ The same rigs in their original long-form entries:
 - `e33_etw_analyze.py` — DiskIo CSV/XML event counts and ByteOffset extraction;
 - `e33_integrate.py` — joins decoded index LSN pages with ETW writes/barriers;
 - results in [E33-RESULTS.md](E33-RESULTS.md) (superseded) and [E33.1-RESULTS.md](E33.1-RESULTS.md) (current); plan in [E33-PLAN.md](E33-PLAN.md).
-- E33.1 additions: `e33_etw_analyze.py` parses the typed DiskIo payload columns from the tracerpt CSV (no XML conversion); `e33_integrate.py` writes `decoded-index-records.{json,csv}`, `target-page-writes.csv` and `l3-attribution.json`; `E33Marker.cs` + `e33-profile.wprp` are the rig's own ETW marker provider and trace profile.
+- E33.1 additions: `e33_etw_analyze.py` parses the typed DiskIo payload columns from the tracerpt CSV (no XML conversion); `e33_integrate.py` writes `decoded-index-records.{json,csv}`, `target-page-writes.csv` and `l3-attribution.json`; `e33_audit.py` re-checks the acceptance criteria against an artifact (`python e33_audit.py --artifacts <dir>`); `E33Marker.cs` + `e33-profile.wprp` are the rig's own ETW marker provider and trace profile.
 
 ### E21 (real hardware / CI, `run-tier1.ps1` + `.github/workflows/e21-tier1.yml`)
 - `run-tier1.ps1` — four cumulative arms with a flush-only measurement window; prefers wpr (its DiskIO profile emits `DiskIo/FlushBuffers`), logman as fallback; reports flush IRPs, writes, reads and per-call durations; verdict keys on writes (a dir flush that carries metadata would show writes)

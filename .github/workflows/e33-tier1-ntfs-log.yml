@@ -62,6 +62,12 @@ jobs:
               -Volume D: -Reps 20 -NoPause
           $code = $LASTEXITCODE
           Write-Host "E33 script exit: $code"
+          # Keep the generating SHA next to the evidence it produced.
+          $art = Get-ChildItem -Recurse -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if ($art -and (Test-Path 'e33-build-info.json')) {
+            Copy-Item 'e33-build-info.json' -Destination $art.FullName -Force
+          }
           if ($code -ne 0) { exit $code }
 
       - name: Parse ETW (typed DiskIo payloads)
