@@ -89,6 +89,32 @@ void SendAll(const char* data, size_t len) {
   }
 }
 
+/* Minimal JSON string escaping: paths and file names from the environment
+ * can contain backslashes and quotes, which must not break the event line. */
+std::string JsonEscape(const std::string& s) {
+  std::string out;
+  for (unsigned char c : s) {
+    if (c == 0x5C) {              /* backslash */
+      out += "\\\\";
+    } else if (c == 0x22) {       /* quote */
+      out += "\\\"";
+    } else if (c == 0x0A) {       /* newline */
+      out += "\\n";
+    } else if (c == 0x0D) {       /* carriage return */
+      out += "\\r";
+    } else if (c == 0x09) {       /* tab */
+      out += "\\t";
+    } else if (c < 0x20) {
+      char b[8];
+      snprintf(b, sizeof b, "\\u%04x", (unsigned)c);
+      out += b;
+    } else {
+      out += (char)c;
+    }
+  }
+  return out;
+}
+
 /* One JSON line per event.  The controller stores it verbatim. */
 void Emit(const char* ev, const char* fmt, ...) {
   char body[1024];
@@ -306,7 +332,8 @@ int main() {
 
   Emit("trial_start",
        "\"arm\":\"%s\",\"op\":\"%s\",\"name\":\"%s\",\"dir\":\"%s\",\"payload\":%lu",
-       arm.c_str(), op.c_str(), name.c_str(), dir.c_str(), payload);
+       arm.c_str(), op.c_str(), JsonEscape(name).c_str(),
+       JsonEscape(dir).c_str(), payload);
 
   {
     HANDLE d = OpenDirectory(wdir);
@@ -357,7 +384,8 @@ int main() {
     std::wstring wdst = wdir + L"\\" + Utf8ToWide(name + ".ren");
     final_name = name + ".ren";
     HANDLE src = MakeSourceFile(wsrc, payload, "rename-src");
-    Emit("op_start", "\"op\":\"rename\",\"src\":\"%s\"", name.c_str());
+    Emit("op_start", "\"op\":\"rename\",\"src\":\"%s\"",
+         JsonEscape(name).c_str());
     BOOL ok = MoveFileExW(wsrc.c_str(), wdst.c_str(), 0);
     if (!ok) {
       op_err = GetLastError();
@@ -398,7 +426,8 @@ int main() {
   Emit("trial_end",
        "\"arm\":\"%s\",\"op\":\"%s\",\"status\":\"%s\",\"err\":%lu,"
        "\"final_name\":\"%s\"",
-       arm.c_str(), op.c_str(), op_status.c_str(), op_err, final_name.c_str());
+       arm.c_str(), op.c_str(), op_status.c_str(), op_err,
+       JsonEscape(final_name).c_str());
 
   if (!done_path.empty()) {
     /* Rehearsal mode only: the controller is told the trial is over. */
