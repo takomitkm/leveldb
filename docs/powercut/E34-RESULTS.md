@@ -125,3 +125,20 @@ Analysis on any host with Python and `pytsk3`:
 python e34-analyze.py --rig-dir <copy of e34-matrix> --out-dir results
 python e34-aggregate.py --trials results/*/recovery.json --out aggregate.json
 ```
+
+## Acceptance criteria (E34-PLAN.md §14) — status at this point
+
+| Criterion | Status |
+|---|---|
+| Crash mechanism and storage cache model recorded and verified | **Yes for this rig**: QEMU 11.1.2 TCG + `blklogwrites`; the guest's writes and FLUSH barriers are logged, and the cut is an offline replay to the last FLUSH. Not physical media. |
+| Power off without a graceful guest shutdown | **Yes**: the host force-kills QEMU on the external `E34DONE` marker; no shutdown sequence runs in the guest. |
+| Every valid trial keeps a pre-recovery disk image | **Yes**: `vm-prerecover.img` is captured before the recovery boot; all quarantined trials are explained. |
+| `$LogFile` decode and recovery check repeatable | **Yes for the analysis tools**: `e34-preimage.py`, `e34-namespace.py`, `e34-recover.py` run on any host with Python + `pytsk3`; the example trials were decoded on a separate machine from the rig. |
+| Every trial has an independently recorded manifest | **Yes**: the manifest and `E34DONE` live on the separate E34LOG volume, not on the tested volume. |
+| Both large and small topology have results | **No**: only large/create has trials so far. |
+| Every primary arm reaches the required count (or the report says why not) | **No**: only A and C are running; B/F/I/K are not started. This report states that explicitly. |
+| All failed and invalid trials retained and explained | **Yes**: see `e34-invalid/README.txt` on the rig and the defect section above. |
+| Final report separates observed behaviour from unprovable guarantees | **Yes**: the table above reports classes per trial; no general durability claim is made, and E34-PLAN §15 applies. |
+
+E34 is therefore **not complete**. The missing cells are a coverage gap, not
+a negative result, and they must not be reported as if they had been measured.
