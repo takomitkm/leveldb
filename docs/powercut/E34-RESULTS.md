@@ -169,6 +169,14 @@ explaining each exclusion. None of them is counted above.
 E34 is therefore **not complete**. The missing cells are a coverage gap, not a
 negative result, and they must not be reported as if they had been measured.
 
+## Machine-readable record
+
+`e34/results/aggregate-20261124.json` and `.csv` are the per-arm aggregate
+produced by `e34-aggregate.py`; `e34/results/trials-20261124.csv` is the
+per-trial table (class, recovery source, flush status, and whether the raw
+namespace already held the name). Both are generated from the trial JSONs, not
+hand-written.
+
 ## Reproduce
 
 On the QEMU rig (school machine, `school-guest-pc2`):
