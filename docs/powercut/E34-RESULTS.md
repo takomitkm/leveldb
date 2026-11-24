@@ -109,9 +109,9 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
 
 **Not established:**
 
-* any bound: 10 and 12 trials are below the 30 required by §12, so the
-  one-sided 95% bound is not reported (at 10 trials a zero-failure cell would
-  only bound the failure rate at ~26%);
+* a useful bound: 10 and 12 trials are far below the 30 §12 requires. The only
+  number available is `p <= 25.9%` for the zero-failure arm C cell, which is
+  too weak to call a durability guarantee;
 * arms B, F, I and K;
 * the `rename` and `delete` workloads;
 * the small topology;
