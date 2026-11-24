@@ -25,6 +25,10 @@ matrix cell (`create`, large topology):
   0 lost**. In 7 of the 10 the raw namespace was **empty** and the entry came
   back only through Windows' log replay; the other 3 already had it on the
   platter.
+* **arm B** (`FlushFileBuffers(target file)`): **10/10 R4**; 8 of the 10 had an
+  empty raw namespace and came back only through replay.
+* **arm F** (`FlushFileBuffers($I30:$INDEX_ALLOCATION stream)`): **10/10 R4**,
+  log record present in all 10; raw-namespace classification still running.
 * **arm A** (no candidate flush), 12 valid trials: **7 R1 (lost)**, 5 R4. All
   5 survivors already had the entry on the platter; no arm A trial was rescued
   by replay.
@@ -49,16 +53,14 @@ the fixed harness (`pe-e34N.iso`).
 
 ## What is running / missing
 
-* **running**: arm B (`FlushFileBuffers(target file)`) and arm F
-  (`FlushFileBuffers($I30 stream)`) batches of 10, same cell;
 * **not run**: arm I, the arm K control, the `rename`/`delete` workloads, the
   small topology, and the secondary crash points of E34-PLAN §7.
 
 ## What this does NOT establish
 
 * a useful statistical bound: 10–12 trials per cell are far below the 30 that
-  §12 requires, so the only number is `p <= 25.9%` for the zero-failure arm C
-  cell — too weak to call a durability guarantee;
+  §12 requires, so the only number is `p <= 25.9%` for the zero-failure B/C/F
+  cells — too weak to call a durability guarantee;
 * anything about physical media: the storage model is QEMU `blklogwrites` with
   an offline last-FLUSH cut, and E34-PLAN §15 applies in full;
 * any general "NTFS is durable if you flush X" rule: the result is scoped to
