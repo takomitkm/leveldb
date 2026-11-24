@@ -44,6 +44,7 @@ Both batches are arm/operation/topology cells of the same harness
 | **A** | none (control) | create | large | 12 |
 | **B** | `FlushFileBuffers(target file)` | create | large | 10 |
 | **C** | `FlushFileBuffers(parent directory)` | create | large | 10 |
+| **F** | `FlushFileBuffers($I30:$INDEX_ALLOCATION stream)` | create | large | 10 |
 
 Classes (E34-PLAN.md §11), per trial, no merging:
 
@@ -52,6 +53,7 @@ Classes (E34-PLAN.md §11), per trial, no merging:
 | **A** | **7** | 0 | 5 | 12 | n/a (7 failures) |
 | **B** | 0 | 0 | **10** | 10 | `p <= 25.9%` |
 | **C** | 0 | 0 | **10** | 10 | `p <= 25.9%` |
+| **F** | 0 | 0 | **10** | 10 | `p <= 25.9%` |
 
 Every trial in both arms had an intact evidence chain: external manifest on
 the E34LOG volume, pre-recovery image kept (SHA-256 recorded on the rig),
@@ -67,10 +69,13 @@ The interesting part is not only whether the entry survived, but *how*:
 | **A** | 5 / 12 | **5** (every survivor) | 0 | 7 / 12 |
 | **B** | 10 / 10 | 2 | **8** | 0 / 10 |
 | **C** | 10 / 10 | 3 | **7** | 0 / 10 |
+| **F** | 10 / 10 | see note | see note | 0 / 10 |
 
 The raw namespace was checked on **all 32** pre-recovery images of arms A, B
-and C (one image at a time, `dump-namespaces.py`), so this table is complete,
-not a sample.
+and C (one image at a time, `dump-namespaces.py`), so those rows are complete,
+not a sample. Arm F's namespace dump was still running when this file was
+written; its 10 R4 classes rest on the recovery listing plus the
+`positively identified` `$LogFile` record for all 10 trials.
 
 So the two arms reach the same "survived" state by different routes:
 
@@ -95,6 +100,10 @@ So the two arms reach the same "survived" state by different routes:
   through replay. That is the same mechanism: NTFS has one log per volume, so
   flushing the file commits the log entries the index operation had already
   written.
+* **arm F** (`FlushFileBuffers` on the `$I30:$INDEX_ALLOCATION` stream, the
+  handle E33.1 found needs `FILE_FLAG_BACKUP_SEMANTICS`): 10/10 restored, and
+  the pre-recovery decode carries the record for all 10. Its raw-namespace
+  classification is still pending.
 
 Taken together, the three flush arms are indistinguishable on this metric
 under this crash model — what matters is that **some** flush commits the
@@ -115,8 +124,9 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
   modelled power cut, NTFS log replay restored the confirmed create in
   **10/10** trials, and the pre-recovery `$LogFile` independently carried the
   matching `AddIndexEntryRoot` record in all 10.
-* The same held for `FlushFileBuffers(target file)`: **10/10** restored, log
-  record present in all 10 — the two flush shapes are indistinguishable here.
+* The same held for `FlushFileBuffers(target file)` and for the
+  `$I30:$INDEX_ALLOCATION` stream flush: **10/10** each, log record present in
+  all 10 — the three flush shapes are indistinguishable on this metric here.
 * The no-flush control lost the same confirmed create in **7/12** trials, so
   the harness discriminates and the result is not "everything always
   survives".
@@ -129,7 +139,7 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
 * a useful bound: 10 and 12 trials are far below the 30 §12 requires. The only
   number available is `p <= 25.9%` for the zero-failure arm C cell, which is
   too weak to call a durability guarantee;
-* arm F (running), arm I, and the arm K control;
+* arm I and the arm K control;
 * the `rename` and `delete` workloads;
 * the small topology;
 * the secondary crash points of §7;
