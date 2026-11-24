@@ -115,12 +115,14 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
   modelled power cut, NTFS log replay restored the confirmed create in
   **10/10** trials, and the pre-recovery `$LogFile` independently carried the
   matching `AddIndexEntryRoot` record in all 10.
+* The same held for `FlushFileBuffers(target file)`: **10/10** restored, log
+  record present in all 10 — the two flush shapes are indistinguishable here.
 * The no-flush control lost the same confirmed create in **7/12** trials, so
   the harness discriminates and the result is not "everything always
   survives".
-* The recovery route for most arm C trials was log replay, not a direct index
-  write: in 7 of 10 the raw namespace was empty and only the replay produced
-  the name.
+* The recovery route for most flush-arm trials was log replay, not a direct
+  index write: the raw namespace was empty in 7 of 10 arm C trials and 8 of 10
+  arm B trials, and only the replay produced the name.
 
 **Not established:**
 
