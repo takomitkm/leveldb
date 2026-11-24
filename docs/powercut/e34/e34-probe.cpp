@@ -7,7 +7,21 @@
  * Build (Windows, MinGW):
  *   g++ -O2 -std=c++17 e34-probe.cpp -o e34probe.exe -lws2_32
  *
- * Configuration comes from the environment (set by the launcher):
+ * In the WinPE guest (the E14/E17 rig) there is no environment and no
+ * network, so the trial parameters come from the SMBIOS system serial string
+ * ("E34ARM=C;OP=create;TOPO=large;TRIAL=1"), exactly like the E17 probe
+ * reads "E17ARM=<n>;REPS=<r>".  The data volume is the NTFS volume labelled
+ * E13SYS.
+ *
+ * Two output channels, because a hosted or bare guest may have neither:
+ *   * COM1 (the QEMU serial) - the external channel E34-PLAN.md section 8
+ *     wants; every event is written there, unbuffered.
+ *   * A WRITE_THROUGH manifest file on the data volume - the fallback; the
+ *     host polls the blklogwrites journal for its marker and then cuts the
+ *     power, and the manifest is recovered from the pre-recovery image.
+ *
+ * Configuration from the environment (used when there is no SMBIOS, e.g. in
+ * the CI rehearsal):
  *   E34_DIR       target directory (on the test volume)
  *   E34_ARM       A|B|C|F|I|K
  *   E34_OP        create|rename|delete
@@ -115,7 +129,63 @@ std::string JsonEscape(const std::string& s) {
   return out;
 }
 
+/* ---------------------------------------------------------------- SMBIOS */
+/* The E17 rig passes its arm through the SMBIOS system serial string; the
+ * E34 probe does the same with "E34ARM=<arm>;OP=<op>;TOPO=<topology>". */
+static std::string SmbiosField(const char* key) {
+  typedef UINT(WINAPI* pGFT)(DWORD, DWORD, PVOID, UINT);
+  pGFT gft = (pGFT)GetProcAddress(GetModuleHandleA("kernel32.dll"),
+                                  "GetSystemFirmwareTable");
+  if (!gft) return std::string();
+  UINT need = gft('RSMB', 0, nullptr, 0);
+  if (!need || need > (1u << 20)) return std::string();
+  static BYTE buf[1 << 20];
+  if (gft('RSMB', 0, buf, need) != need) return std::string();
+  const char* hit = nullptr;
+  size_t klen = strlen(key);
+  for (UINT i = 0; i + klen <= need; ++i) {
+    if (memcmp(buf + i, key, klen) == 0) { hit = (const char*)(buf + i); break; }
+  }
+  if (!hit) return std::string();
+  std::string out(hit + klen);
+  size_t stop = out.find(';');
+  if (stop != std::string::npos) out = out.substr(0, stop);
+  return out;
+}
+
+/* --------------------------------------------------------- data volume */
+/* The rig's data disk carries the NTFS volume labelled E13SYS. */
+static char FindDataVolume() {
+  for (char c = 'C'; c <= 'Z'; ++c) {
+    char root[4] = {c, ':', '\\', 0};
+    char lbl[64] = {0};
+    char fs[16] = {0};
+    if (GetVolumeInformationA(root, lbl, sizeof lbl, nullptr, nullptr,
+                              nullptr, fs, sizeof fs)) {
+      if (_stricmp(fs, "NTFS") == 0 && _stricmp(lbl, "E13SYS") == 0) return c;
+    }
+  }
+  return 0;
+}
+
+/* ------------------------------------------------------- serial channel */
+static HANDLE g_serial = INVALID_HANDLE_VALUE;
+
+static void OpenSerial() {
+  g_serial = CreateFileA("\\.\COM1", GENERIC_WRITE, FILE_SHARE_READ,
+                         nullptr, OPEN_EXISTING, 0, nullptr);
+}
+
+static void SerialWrite(const char* data, size_t len) {
+  if (g_serial == INVALID_HANDLE_VALUE) return;
+  DWORD w = 0;
+  WriteFile(g_serial, data, (DWORD)len, &w, nullptr);
+  FlushFileBuffers(g_serial);
+}
+
 /* One JSON line per event.  The controller stores it verbatim. */
+std::string g_event_log;
+
 void Emit(const char* ev, const char* fmt, ...) {
   char body[1024];
   va_list ap;
@@ -133,7 +203,9 @@ void Emit(const char* ev, const char* fmt, ...) {
                    "{\"ev\":\"%s\",\"t\":%llu,\"tid\":%lu,\"pid\":%lu,%s}\r\n",
                    ev, ticks, GetCurrentThreadId(), GetCurrentProcessId(), body);
   if (n <= 0) return;
-  SendAll(line, (size_t)n);
+  g_event_log += line;
+  SendAll(line, (size_t)n);   /* TCP channel (CI rehearsal) */
+  SerialWrite(line, (size_t)n); /* COM1 channel (the QEMU rig) */
 }
 
 std::string WideToUtf8(const wchar_t* w) {
@@ -312,17 +384,55 @@ HANDLE MakeSourceFile(const std::wstring& path, DWORD payload,
 
 int main() {
   std::string dir, arm, op, name, payload_s, done_path, vol;
-  EnvOr("E34_DIR", "C:\\e34", &dir);
-  EnvOr("E34_ARM", "A", &arm);
-  EnvOr("E34_OP", "create", &op);
-  EnvOr("E34_NAME", "e34.bin", &name);
+  EnvOr("E34_DIR", "", &dir);
+  EnvOr("E34_ARM", "", &arm);
+  EnvOr("E34_OP", "", &op);
+  EnvOr("E34_NAME", "", &name);
   EnvOr("E34_PAYLOAD", "4096", &payload_s);
   EnvOr("E34_DONE", "", &done_path);
-  EnvOr("E34_VOLUME", "D:", &vol);
+  EnvOr("E34_VOLUME", "", &vol);
 
+  /* The QEMU rig passes the trial parameters through SMBIOS; the CI rehearsal
+   * uses the environment.  SMBIOS wins when both are present. */
+  std::string sb_arm = SmbiosField("E34ARM=");
+  std::string sb_op = SmbiosField("OP=");
+  std::string sb_topo = SmbiosField("TOPO=");
+  std::string sb_trial = SmbiosField("TRIAL=");
+  if (!sb_arm.empty()) arm = sb_arm;
+  if (!sb_op.empty()) op = sb_op;
+  if (arm.empty()) arm = "A";
+  if (op.empty()) op = "create";
+
+  OpenSerial();
+
+  /* The data volume is the NTFS volume labelled E13SYS (the rig's disk). */
+  std::string topo = sb_topo.empty() ? std::string("large") : sb_topo;
+  char dv = FindDataVolume();
+  if (dir.empty()) {
+    if (!dv) {
+      Emit("fatal", "\"reason\":\"no E13SYS data volume\"");
+      return 3;
+    }
+    char d[64];
+    snprintf(d, sizeof d, "%c:\\e34\\%s", dv,
+             topo == "small" ? "small" : "large");
+    dir = d;
+    CreateDirectoryA((std::string(1, dv) + ":\\e34").c_str(), nullptr);
+    CreateDirectoryA(dir.c_str(), nullptr);
+  }
+  if (name.empty()) {
+    std::string trial = sb_trial.empty() ? std::string("1") : sb_trial;
+    name = "e34_" + arm + "_" + op + "_" + trial + ".bin";
+  }
+  if (vol.empty()) {
+    vol = std::string(1, dv ? dv : 'D') + ":";
+  }
+
+  /* The TCP controller is optional: the QEMU guest has no network, and the
+   * COM1 and manifest channels carry the evidence there. */
   if (!ConnectController()) {
-    fprintf(stderr, "E34: cannot reach the controller\n");
-    return 2;
+    Emit("note", "\"reason\":\"no TCP controller; using COM1 and the "
+         "manifest file\"");
   }
 
   std::wstring wdir = Utf8ToWide(dir);
@@ -428,6 +538,31 @@ int main() {
        "\"final_name\":\"%s\"",
        arm.c_str(), op.c_str(), op_status.c_str(), op_err,
        JsonEscape(final_name).c_str());
+
+  /* Fallback channel: a WRITE_THROUGH manifest on the data volume.  The host
+   * polls the blklogwrites journal for the marker and then cuts the power;
+   * the manifest itself is recovered from the pre-recovery image copy. */
+  {
+    /* g_event_log lives in the anonymous namespace above and is visible
+     * here by unqualified lookup. */
+    std::string manifest = g_event_log;
+    if (dv) {
+      std::string mpath = std::string(1, dv) + ":\\e34\\manifest-" +
+                          arm + "-" + op + ".txt";
+      HANDLE mh = CreateFileA(mpath.c_str(), GENERIC_WRITE,
+                              FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                              nullptr);
+      if (mh != INVALID_HANDLE_VALUE) {
+        DWORD w = 0;
+        WriteFile(mh, manifest.data(), (DWORD)manifest.size(), &w, nullptr);
+        FlushFileBuffers(mh);
+        CloseHandle(mh);
+      }
+    }
+    Emit("E34DONE", "\"arm\":\"%s\",\"op\":\"%s\"", arm.c_str(),
+         op.c_str());
+  }
 
   if (!done_path.empty()) {
     /* Rehearsal mode only: the controller is told the trial is over. */
