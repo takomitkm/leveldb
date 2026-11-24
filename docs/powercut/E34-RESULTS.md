@@ -63,6 +63,10 @@ with that caveat stated.
   for an arm that depends on NTFS writeback timing — and it is why arm A is a
   control, not a recommendation. It also shows the harness discriminates:
   a rig that always says "survived" would not produce an R1.
+
+  A larger first batch (8 valid arm A trials) gave **3 R1 / 5 R3** — the
+  no-flush arm loses the confirmed entry in a substantial fraction of trials
+  under this power-cut model. The 20-trial A-vs-C batch is still running.
 * Nothing here supports a general durability claim, and E34-PLAN.md §15
   (explicit non-goals) applies in full.
 
