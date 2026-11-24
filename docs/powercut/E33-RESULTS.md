@@ -1,5 +1,16 @@
 # E33 — NTFS `$LogFile` flush attribution for directory-index (`$I30`) changes
 
+> **Superseded (2026-11-24) by [E33.1-RESULTS.md](E33.1-RESULTS.md).**  The numbers
+> below come from a hand-rolled local analysis of run 45254468807.  E33.1
+> ([run 45297618762](https://github.com/takomitkm/leveldb/actions/runs/45297618762))
+> re-ran the experiment with the attribution fixed and the analysis inside CI:
+> the target-page matching must use the *physical* RCRD page a record occupies
+> (the LSN-derived page can differ in a circular log), and the barrier test
+> must be per candidate call rather than per arm.  E33.1 confirms the
+> conclusions below but changes their evidence basis; read E33.1 for the
+> numbers that stand.
+
+
 **Run:** 2026-11-24, GitHub Actions `windows-latest` (Windows Server 2025,
 build 26100), volume `D:` NTFS, 20 reps × 3 operations × 12 arms.
 **Workflow run:** [45254468807](https://github.com/takomitkm/leveldb/actions/runs/45254468807) (head `f0a9e0b`; the full-page decoder fix `62f440a` was validated locally on the same artifacts).
