@@ -31,13 +31,13 @@ C-create-large-207,C,create,C:\e34\large,R4,replayed,win32-dir,True,True,False,p
 C-create-large-208,C,create,C:\e34\large,R4,replayed,win32-dir,True,True,False,positively identified
 C-create-large-209,C,create,C:\e34\large,R4,already durable,win32-dir,True,True,True,positively identified
 C-create-large-210,C,create,C:\e34\large,R4,replayed,win32-dir,True,True,False,positively identified
-F-create-large-301,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-302,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-303,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-304,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-305,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-306,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-307,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-308,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-309,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
-F-create-large-310,F,create,C:\e34\large,R4,unknown,win32-i30,True,True,,positively identified
+F-create-large-301,F,create,C:\e34\large,R4,already durable,win32-i30,True,True,True,positively identified
+F-create-large-302,F,create,C:\e34\large,R4,replayed,win32-i30,True,True,False,positively identified
+F-create-large-303,F,create,C:\e34\large,R4,replayed,win32-i30,True,True,False,positively identified
+F-create-large-304,F,create,C:\e34\large,R4,already durable,win32-i30,True,True,True,positively identified
+F-create-large-305,F,create,C:\e34\large,R4,already durable,win32-i30,True,True,True,positively identified
+F-create-large-306,F,create,C:\e34\large,R4,replayed,win32-i30,True,True,False,positively identified
+F-create-large-307,F,create,C:\e34\large,R4,already durable,win32-i30,True,True,True,positively identified
+F-create-large-308,F,create,C:\e34\large,R4,replayed,win32-i30,True,True,False,positively identified
+F-create-large-309,F,create,C:\e34\large,R4,replayed,win32-i30,True,True,False,positively identified
+F-create-large-310,F,create,C:\e34\large,R4,replayed,win32-i30,True,True,False,positively identified

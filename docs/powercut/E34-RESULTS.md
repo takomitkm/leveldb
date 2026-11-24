@@ -69,13 +69,10 @@ The interesting part is not only whether the entry survived, but *how*:
 | **A** | 5 / 12 | **5** (every survivor) | 0 | 7 / 12 |
 | **B** | 10 / 10 | 2 | **8** | 0 / 10 |
 | **C** | 10 / 10 | 3 | **7** | 0 / 10 |
-| **F** | 10 / 10 | see note | see note | 0 / 10 |
+| **F** | 10 / 10 | 4 | **6** | 0 / 10 |
 
-The raw namespace was checked on **all 32** pre-recovery images of arms A, B
-and C (one image at a time, `dump-namespaces.py`), so those rows are complete,
-not a sample. Arm F's namespace dump was still running when this file was
-written; its 10 R4 classes rest on the recovery listing plus the
-`positively identified` `$LogFile` record for all 10 trials.
+The raw namespace was checked on **all 42** pre-recovery images (one image at
+a time, `dump-namespaces.py`), so this table is complete, not a sample.
 
 So the two arms reach the same "survived" state by different routes:
 
@@ -101,9 +98,9 @@ So the two arms reach the same "survived" state by different routes:
   flushing the file commits the log entries the index operation had already
   written.
 * **arm F** (`FlushFileBuffers` on the `$I30:$INDEX_ALLOCATION` stream, the
-  handle E33.1 found needs `FILE_FLAG_BACKUP_SEMANTICS`): 10/10 restored, and
-  the pre-recovery decode carries the record for all 10. Its raw-namespace
-  classification is still pending.
+  handle E33.1 found needs `FILE_FLAG_BACKUP_SEMANTICS`): 10/10 restored, the
+  pre-recovery decode carries the record for all 10, and 6 of 10 came back
+  only through replay.
 
 Taken together, the three flush arms are indistinguishable on this metric
 under this crash model — what matters is that **some** flush commits the
