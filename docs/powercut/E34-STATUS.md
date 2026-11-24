@@ -43,7 +43,29 @@ report. Nothing here may be read as a durability result.
 * the E33 decoders still pass their self-tests, so the pre-recovery decode
   path is usable against real `$LogFile` images.
 
-## What is blocked, and why
+## Bootstrap crash trial (rig validation, not a result)
+
+The rig host became reachable, so a bootstrap trial was run through the
+**existing E17 probe** (`e17-run.sh 1 3`, arm 1 create + parent-directory
+flush = E34 arm C create) purely to validate the crash chain. It is excluded
+from E34's R0-RX ledger because its manifest was written to the tested volume
+(E34-PLAN.md section 8 forbids that). Full record:
+[E34-BOOTSTRAP.md](E34-BOOTSTRAP.md).
+
+What it established on real artifacts:
+
+* DONE marker at 40 s, QEMU force-killed without a graceful shutdown, and the
+  crashed volume plus the blklogwrites journal preserved;
+* `e34-preimage.py` found the `$LogFile` on the crashed 4 GiB image, decoded
+  36 index operations, attributed two of three test files with LSN + RCRD
+  page (a1_r0.bin at LSN 8396124 page 14; a1_r1.bin at LSN 8396762 page 15),
+  and correctly labelled the third `overwritten`;
+* `e34-namespace.py` (pytsk3, no replay) listed all three created files in
+  the raw namespace.
+
+No R0-RX classification and no durability claim is made from this trial.
+
+## What is still blocked for the real matrix
 
 The crash trials need a host that can **cut the power** while keeping the
 volumes byte-identical afterwards:
@@ -60,13 +82,14 @@ before the OS replays anything. E34-PLAN.md section 3.1 requires this to be
 *proved* before a trial may be called a power-cut trial, and section 11
 requires an invalid trial to be classified RX rather than quietly counted.
 
-The rig host's SSH tunnel (`127.0.0.1:13401`, the `ssh-school` helper) is
-currently refusing connections, so the QEMU trials could not be started from
-this session either.
+The remaining hard step is injecting `e34-probe.cpp` into the WinPE image:
+the probe is `/e13pe.exe` inside the WIM (both image indexes), and the rig
+host has no wimlib and no elevated DISM. The rig's SSH tunnel is now working
+(via `school-guest-pc2`), so the host is reachable.
 
-**Consequence:** E34 is *designed and instrumented*, not *executed*. The
-honest state is "no data yet", and no arm may be reported as L4, L5, or
-"durable" on the strength of the E33.1 result.
+**Consequence:** E34 is *instrumented and its harness chain is validated by a
+bootstrap trial*, but the structured matrix has not been run. No arm may be
+reported as L4 or L5 on the strength of E33.1 or the bootstrap trial.
 
 ## Bugs the CI cycle found (all fixed)
 
