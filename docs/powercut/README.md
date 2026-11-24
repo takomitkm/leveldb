@@ -1,17 +1,17 @@
-# Power-cut / block-tracing test rig (E11–E33.1; master index below)
+# Power-cut / block-tracing test rig (E11–E34; master index below)
 
 This directory archives the measurement rigs behind the Windows
 parent-directory-flush fix (`SyncDirIfManifest()`, upstream PR #1388) and
 its README claims. Three generations, one question each:
 
-## Master index (E11–E33.1)
+## Master index (E11–E34)
 
 > **E1–E10:** no archived record in this repository. The power-cut series as
 > archived here starts at E11; do not infer results for earlier numbers from
 > this table. **E18** was reserved for a patch-body run that never happened;
 > **E20** was assessed as not executable; **E22** was inconclusive. The next
-> free number is **E34**.  (E33.1 is the evidence-closure follow-up to E33;
-> it reuses the E33 number with a `.1` suffix and does not consume a new one.)
+> free number is **E35**.  (E33.1 is the evidence-closure follow-up to E33
+> and reuses the E33 number with a `.1` suffix; it does not consume a new one.)
 
 | ID | What it tested | Environment | Result |
 |---|---|---|---|
@@ -39,6 +39,7 @@ its README claims. Three generations, one question each:
 | **E32** | `NtFlushBuffersFileEx(FLUSH_AND_PURGE=8)` on 24H2+ vs flag 0 and the Win32 flush, on file / directory / volume-root handles | GitHub Actions `windows-latest` (build 26100), `wpr` DiskIO ETW, 100 reps × 9 arms, three runs (arm I added in the third) | Flag 8 is accepted on 26100 (19041/19045 returned `STATUS_INVALID_PARAMETER` — E17) and issues the same ≈1.5 flush IRPs per call as every other flush shape. The volume-root write burst seen in runs 1–2 (+252 / +616 over flag 0) did **not** reproduce in run 3 (Δ +6 vs −31, baseline itself 232 vs 57/97) — no stable evidence that flag 8 is stronger than a plain flush; arm I (Win32 root flush) sits with G/H. Full report: [E32-RESULTS.md](E32-RESULTS.md) |
 | **E33** | Decode the exact `$LogFile` redo/undo records of a test directory's `$I30`, then attribute log-page writes and flush barriers to the handle/API | GitHub Actions `windows-latest` (build 26100), 12 arms ×20 reps ×3 ops, raw-volume `$LogFile` extraction, full-page RCRD decoder, wpr DiskIO ETW ByteOffset join | Every arm logs the test names (`AddIndexEntryAllocation`/`AddIndexEntryRoot`); the `$I30:$INDEX_ALLOCATION` stream **is openable with `FILE_FLAG_BACKUP_SEMANTICS`** (without it: `ERROR_ACCESS_DENIED`); `NtCreateFile` on the stream fails `STATUS_OBJECT_PATH_SYNTAX_BAD`. Target `$LogFile` pages reach the device behind barriers in B/C/D/E/F/G/H/K (L3), not in A/J/L; no arm writes the `$I30` home page (no L4). No power-cut test. Full report: [E33-RESULTS.md](E33-RESULTS.md), [E33-PLAN.md](E33-PLAN.md) |
 | **E33.1** | Close the E33 evidence chain: per-call barrier attribution, physical-page target matching, and a CI-verified ETW analysis | GitHub Actions `windows-latest` (build 26100), 15 arms ×20 reps ×3 ops, ETW DiskIo payload parsing from the tracerpt CSV, raw-volume `$LogFile` extraction, per-call FILETIME boundaries | The ETW analysis now runs **inside CI** (the E33 `E33-evidence.json` had `etw_xml_parsed=false`); target pages are matched by the **physical** RCRD page, not the LSN-derived one (a circular log can differ); barriers are per candidate call (`write ≤ FlushInit ≤ FlushBuffers ≤ API return`, thread-matched). L3 confirmed for B/C/D/E/F/G/H/I/K/M/N/O, L1 for A/J/L; no arm writes the `$I30` home page (no L4). Full report: [E33.1-RESULTS.md](E33.1-RESULTS.md) |
+| **E34** | Does NTFS log replay restore a confirmed directory-index change after a successful candidate flush is followed by a sudden power loss? | QEMU rig with the blklogwrites journal (E14/E17/E29-E31 pattern), guest probe + external manifest channel, pre-recovery disk copy, R0-RX classification | **Rig delivered, no trial run yet** - the plan, probe, controller, pre-recovery decode, recovery classifier and statistics are in place and CI-validated (run 45323673899: probe builds, a live external-channel trial records all eight events); the crash trials are blocked on the QEMU host (SSH tunnel down), and a hosted runner cannot serve as a power-cut rig (no verified volatile-cache model, no pre-recovery disk snapshot). No durability claim is made. Status: [E34-STATUS.md](E34-STATUS.md); plan: [E34-PLAN.md](E34-PLAN.md) |
 
 
 ## Detailed summaries
@@ -101,6 +102,16 @@ The same rigs in their original long-form entries:
 - `e33_etw_analyze.py` — DiskIo CSV/XML event counts and ByteOffset extraction;
 - `e33_integrate.py` — joins decoded index LSN pages with ETW writes/barriers;
 - results in [E33-RESULTS.md](E33-RESULTS.md) (superseded) and [E33.1-RESULTS.md](E33.1-RESULTS.md) (current); plan in [E33-PLAN.md](E33-PLAN.md).
+### E34 (crash-consistency rig, `docs/powercut/e34/`)
+- `E34-PLAN.md` - the pre-registered design (stages, arms, crash points, the four pre-recovery states, the R0-RX classes, the 3/N bound, the non-goals);
+- `e34-probe.cpp` - the guest probe: the namespace change plus the candidate flush, every event reported over an external TCP channel (never the test volume);
+- `e34-crashctl.py` - the host controller: manifest, guest/host clock alignment, channel-overhead measurement, crash trigger;
+- `e34-preimage.py` - the pre-recovery forensic decode (reuses the E33 decoder);
+- `e34-recover.py` - the recovery check and the R0-RX classification;
+- `e34-aggregate.py` - the per-arm statistics with the one-sided 95% bound;
+- `e34-trial.sh` - one crash trial on the QEMU rig;
+- `e34-selftest.py` - the analysis self-tests (run by `.github/workflows/e34-selftest.yml`).
+
 - E33.1 additions: `e33_etw_analyze.py` parses the typed DiskIo payload columns from the tracerpt CSV (no XML conversion); `e33_integrate.py` writes `decoded-index-records.{json,csv}`, `target-page-writes.csv` and `l3-attribution.json`; `e33_audit.py` re-checks the acceptance criteria against an artifact (`python e33_audit.py --artifacts <dir>`); `E33Marker.cs` + `e33-profile.wprp` are the rig's own ETW marker provider and trace profile.
 
 ### E21 (real hardware / CI, `run-tier1.ps1` + `.github/workflows/e21-tier1.yml`)

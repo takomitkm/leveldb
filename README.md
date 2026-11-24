@@ -71,6 +71,16 @@ sync — the last entry this table ever held, and the Windows counterpart of
 [#195](https://github.com/google/leveldb/issues/195) — was fixed in this
 fork on 2026-11-04 (see table A). Upstream still has both gaps.
 
+**E34 (2026-11-24):** the crash-recovery follow-up is *designed and
+instrumented but not run* - see [E34-STATUS.md](docs/powercut/E34-STATUS.md).
+Its plan ([E34-PLAN.md](docs/powercut/E34-PLAN.md)) asks whether NTFS log
+replay restores a confirmed directory-index change after a successful
+candidate flush is followed by a sudden power loss.  The rig (guest probe,
+host controller with an external manifest channel, pre-recovery forensic
+decode, R0-RX classification, statistics) is CI-validated, but no crash
+trial has been executed: the QEMU rig host is unreachable and a hosted
+runner cannot serve as a power-cut rig.  **No durability claim is made here.**
+
 **E33 / E33.1 (2026-11-24):** the latest tier-1 experiments ([E33.1-RESULTS.md](docs/powercut/E33.1-RESULTS.md)) decode the exact `$LogFile` index records for create/rename/delete and attribute their log-page writes and flush barriers to 15 handle/API combinations, with the whole analysis running inside CI. They showed that the explicit `$I30:$INDEX_ALLOCATION` stream handle *is* openable (with `FILE_FLAG_BACKUP_SEMANTICS`), and that every arm whose flush actually succeeded reaches L3 (the target log records land behind a barrier that completes before the API returns) while no arm reaches L4 (no `$I30` home-page write). Recovery across an actual power cut (L5) remains untested.
 
 **Checked and found consistent** (so nobody has to audit them again): file
