@@ -99,16 +99,12 @@ jobs:
               --rehearsal --timeout 120
           } -ArgumentList $py, $env:GITHUB_WORKSPACE, $port, $manifest, $summary
 
-          # Wait until the controller is actually listening.
-          $listening = $false
-          for ($i = 0; $i -lt 40; $i++) {
-            Start-Sleep -Milliseconds 500
-            $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port $port `
-              -InformationLevel Quiet -WarningAction SilentlyContinue
-            if ($probe) { $listening = $true; break }
-          }
-          if (-not $listening) {
-            Write-Host 'FAIL: the controller never started listening'
+          # Give the controller time to bind.  Do NOT probe the port with a
+          # TCP connect: the controller accepts a single connection, so a
+          # readiness probe would consume the guest's slot.
+          Start-Sleep -Seconds 3
+          if ($ctl.State -eq 'Failed') {
+            Write-Host 'FAIL: the controller job failed'
             Receive-Job $ctl
             exit 1
           }
