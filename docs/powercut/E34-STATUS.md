@@ -54,15 +54,20 @@ README explaining why, and none of them is counted. The A and C trials above
 were run before the second fix, so they are also excluded; the current harness
 is `pe-e34N.iso` with `e34-matrix.sh` using journal replay.
 
-## What is still running / missing
+## What is running / missing
 
-* the matrix (`e34-matrix.sh`) is running arm A (no-flush control) and arm C
-  (parent-directory flush) for `create` on the large topology; the other arms
-  (B/F/I/K), the `rename`/`delete` workloads and the small topology have the
-  same runner but have not been run to the 30-trial target yet;
-* `E34-RESULTS.md` records exactly which cells exist and reports the
-  one-sided bound for the cells that reach zero failures — it does not merge
-  arms and does not claim a general durability result.
+* **done**: arm A (no candidate flush) 12 valid trials and arm C
+  (`FlushFileBuffers(parent directory)`) 10 valid trials, both `create` on the
+  large topology, each with the external manifest, a kept pre-recovery image,
+  the `$LogFile` decode and the raw-namespace dump;
+* **running**: arm B (`FlushFileBuffers(target file)`) and arm F
+  (`FlushFileBuffers($I30 stream)`) batches of 10, same cell;
+* **not run**: arm I and the arm K control, the `rename`/`delete` workloads,
+  the small topology, and the secondary crash points.
+
+`E34-RESULTS.md` records exactly which cells exist, the per-trial classes and
+the recovery route; it does not merge arms and does not claim a general
+durability result.
 
 ## What this does NOT establish
 
