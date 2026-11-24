@@ -72,10 +72,12 @@ So the two arms reach the same "survived" state by different routes:
 
 * **arm A is a coin flip.** 7 of 12 trials lost the confirmed create outright
   (`present=0, entries=0` after the recovery boot) and their raw namespace was
-  empty too — no log record survived, so replay had nothing to restore. The 5
-  survivors all had the entry **already on the platter**; replay never rescued
-  an arm A loss. That is what a namespace change left to NTFS writeback timing
-  looks like.
+  empty too. Their pre-recovery decode reported the record as **overwritten**
+  — the surviving log snapshot no longer carried it, which is not proof it was
+  never written, only that the snapshot could not restore it. The 5 survivors
+  all had the entry **already on the platter**; no arm A trial was rescued by
+  replay. That is what a namespace change left to NTFS writeback timing looks
+  like.
 * **arm C never lost, and mostly by a different mechanism.** In 7 of the 10
   trials the raw namespace was **empty** — the parent-directory flush did not
   put the index entry on the platter — yet the name was there after Windows
