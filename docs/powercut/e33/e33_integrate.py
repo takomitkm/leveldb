@@ -254,10 +254,19 @@ def evaluate_call(call: dict, records: List[dict], writes: List[dict],
                   ranges: List[dict], disk_number: Optional[int]) -> dict:
     """Decide L1/L2/L3 for one candidate call."""
     matched = match_call_to_records(call, records)
+    # The page an ETW write can hit is the physical page the record occupies
+    # in the snapshot, i.e. the page the scan found it on.  The LSN-derived
+    # page is reported separately (and validated) because the circular log
+    # means the two disagree for records from an earlier wrap generation.
     target_pages = set()
+    lsn_pages = set()
     for r in matched:
-        if r["lsn_page"] is not None:
+        if r.get("raw_log_page") is not None:
+            target_pages.add(r["raw_log_page"])
+        elif r["lsn_page"] is not None:
             target_pages.add(r["lsn_page"])
+        if r["lsn_page"] is not None:
+            lsn_pages.add(r["lsn_page"])
 
     page_writes = []
     for w in writes:
@@ -343,6 +352,8 @@ def evaluate_call(call: dict, records: List[dict], writes: List[dict],
         "thread_id": call["thread_id"],
         "index_records": len(matched),
         "target_pages": sorted(target_pages),
+        "lsn_pages": sorted(lsn_pages),
+        "lsn_page_matches_physical": sorted(target_pages) == sorted(lsn_pages),
         "target_page_writes": len(page_writes),
         "target_page_writes_in_window": len(window_writes),
         "has_window_timestamps": have_window,
@@ -415,7 +426,10 @@ def main() -> int:
 
         # Target-page writes (Task 2) for every decoded record.
         for r in decoded["rows"]:
-            if r["lsn_page"] is None:
+            target_page = r.get("raw_log_page")
+            if target_page is None:
+                target_page = r.get("lsn_page")
+            if target_page is None:
                 continue
             for w in writes:
                 if disk_number is not None and w.get("disk") != disk_number:
@@ -425,7 +439,7 @@ def main() -> int:
                 if mapped is None:
                     continue
                 stream, page = mapped
-                if page != r["lsn_page"]:
+                if page != target_page:
                     continue
                 page_write_rows.append({
                     "arm": arm_tag,
@@ -434,6 +448,7 @@ def main() -> int:
                     "lsn": r["lsn"],
                     "transaction_id": r["transaction_id"],
                     "rcrd_page": page,
+                    "lsn_page": r.get("lsn_page"),
                     "stream_offset": stream,
                     "physical_byte_offset": w.get("offset"),
                     "write_timestamp": w.get("t"),
@@ -488,7 +503,7 @@ def main() -> int:
     dump_csv("target-page-writes.csv", page_write_rows, [
         "arm", "operation", "filename", "lsn", "transaction_id", "rcrd_page",
         "stream_offset", "physical_byte_offset", "write_timestamp",
-        "write_size", "rcrd_page_file_offset", "lsn_page_offset"])
+        "write_size", "rcrd_page_file_offset", "lsn_page", "lsn_page_offset"])
 
     dump_json("l3-attribution.json", {"calls": l3_calls})
 
