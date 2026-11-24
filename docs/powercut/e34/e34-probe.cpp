@@ -163,7 +163,7 @@ std::string FileIdentity(HANDLE h) {
     return "\"file_record\":0";
   }
   unsigned long long idx =
-      ((unsigned long long)fi.FileIndexHigh << 32) | fi.FileIndexLow;
+      ((unsigned long long)fi.nFileIndexHigh << 32) | fi.nFileIndexLow;
   char buf[128];
   snprintf(buf, sizeof buf, "\"file_record\":%llu", idx);
   return buf;
@@ -314,9 +314,9 @@ int main() {
       BY_HANDLE_FILE_INFORMATION fi;
       if (GetFileInformationByHandle(d, &fi)) {
         unsigned long long idx =
-            ((unsigned long long)fi.FileIndexHigh << 32) | fi.FileIndexLow;
+            ((unsigned long long)fi.nFileIndexHigh << 32) | fi.nFileIndexLow;
         Emit("dir_info", "\"dir_record\":%llu,\"vol_serial\":%lu", idx,
-             fi.VolumeSerialNumber);
+             fi.dwVolumeSerialNumber);
       } else {
         Emit("dir_info", "\"dir_record\":0,\"err\":%lu", GetLastError());
       }
