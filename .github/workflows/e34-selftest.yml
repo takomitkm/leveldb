@@ -96,7 +96,7 @@ jobs:
             Set-Location $ws
             & $py 'docs/powercut/e34/e34-crashctl.py' `
               --port $port --manifest $manifest --summary $summary `
-              --rehearsal --timeout 120
+              --crash-point rehearsal_done --rehearsal --timeout 120
           } -ArgumentList $py, $env:GITHUB_WORKSPACE, $port, $manifest, $summary
 
           # Give the controller time to bind.  Do NOT probe the port with a

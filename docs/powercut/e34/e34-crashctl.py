@@ -75,7 +75,7 @@ class Controller:
             "kill_timestamp": self.killed_at,
             "trial_end_to_kill_ms": (
                 None if self.killed_at is None or not self.events else
-                round(self.killed_at - self.events[-1]["host_wall"], 3)),
+                round((self.killed_at - self.events[-1]["host_t"]) / 10000.0, 3)),
             "rehearsal": bool(self.args.rehearsal),
             "channel_overhead_ms": self.measure_overhead(),
         }
