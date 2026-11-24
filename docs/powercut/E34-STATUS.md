@@ -1,4 +1,4 @@
-# E34 — Status: crash-recovery pipeline runs end-to-end; matrix in progress
+# E34 — Status: create/large matrix done, B/F running
 
 **Date:** 2026-11-24
 **Branch:** `e34-ntfs-index-crash-replay`
@@ -6,75 +6,63 @@
 **Results:** [E34-RESULTS.md](E34-RESULTS.md)
 **CI run:** [45323673899](https://github.com/takomitkm/leveldb/actions/runs/45323673899) (success)
 
-## What changed since the bootstrap trial
+## Where the work stands
 
-The bootstrap trial ([E34-BOOTSTRAP.md](E34-BOOTSTRAP.md)) validated the crash
-harness but could not be part of the ledger: its manifest lived on the tested
-volume. That blocker and two further harness defects are now fixed, and the
-full trial → crash → pre-recovery capture → Windows log replay → classification
-chain runs on the school QEMU rig.
+The full chain runs on the school QEMU rig and has produced its first usable
+matrix cell (`create`, large topology):
 
 | Piece | State |
 |---|---|
-| WIM injection | solved: `wimlib-imagex` 1.14.4 (official Windows build) rewrites `/e13pe.exe` in both image indexes; the ISO is rebuilt with the rig's original `genisoimage` recipe inside the CI guest |
+| WIM injection | solved: `wimlib-imagex` 1.14.4 (official Windows build) replaces `/e13pe.exe` in both image indexes; the ISO is rebuilt with the rig's original `genisoimage` recipe inside the CI guest |
 | External manifest | the probe writes its manifest and the `E34DONE` marker to a **separate E34LOG volume** (a second raw disk), never to the tested volume; the host polls that volume image and cuts the power |
-| Power-cut model | the QEMU `blklogwrites` journal is replayed **up to the last FLUSH barrier** (`e34-journal-replay.py`, the E14 engine); copying the raw device file would keep unflushed host-cache writes and would not be a power cut |
+| Power-cut model | the QEMU `blklogwrites` journal is replayed **up to the last FLUSH barrier**; writes the guest never flushed are dropped |
 | Recovery | the same WinPE boots on a copy of the replayed image with `MODE=recover`, so **Windows performs its own NTFS log replay**, and reports the recovered namespace over the external channel |
-| Analysis | pre-recovery `$LogFile` decode + raw (no-replay) namespace dump + R0–RX classification with an explicit `recovery_source` (already durable vs recovered by replay) |
+| Analysis | pre-recovery `$LogFile` decode + **raw (no-replay) namespace dump on every image** + R0–RX classification with an explicit recovery source |
 
-## First valid trials
+## Result so far (see E34-RESULTS.md for the tables)
 
-`C-create-large-11` is the first trial that ran on the corrected power-cut
-model (the harness defect below was fixed in a later ISO):
-
-```
-phase 1  E34DONE at 70 s, QEMU force-killed (power cut)
-replay   total=132 records, selected=122 (LAST flush cut), 8.15 MB applied
-phase 3  E34DONE at 65 s: recover_result ok=true present=1 entries=1 size=4096
-verdict  R4  ("the confirmed state was already on the platter" +
-               "the index operation was found in the pre-recovery $LogFile")
-```
-
-That is an R4 observation: arm C's parent-directory flush put the index entry
-on the platter before the cut, and the pre-recovery `$LogFile` independently
-carries `AddIndexEntryRoot` for the same name (LSN 8395796, RCRD page 2).
+* **arm C** (`FlushFileBuffers(parent directory)`), 10 valid trials: **10 R4,
+  0 lost**. In 7 of the 10 the raw namespace was **empty** and the entry came
+  back only through Windows' log replay; the other 3 already had it on the
+  platter.
+* **arm A** (no candidate flush), 12 valid trials: **7 R1 (lost)**, 5 R4. All
+  5 survivors already had the entry on the platter; no arm A trial was rescued
+  by replay.
+* That gives the mechanism: the parent-directory flush does not write the
+  index page (consistent with E17/E21 and with E33.1's "L3 but no L4"), but it
+  makes the `$LogFile` `AddIndexEntryRoot` record durable, and NTFS's own
+  replay rebuilds the entry after the power cut.
 
 ## Harness defects found and fixed (trials quarantined)
 
-1. **Raw device copy is not a power cut.** The first trials copied the QEMU
+1. **Raw device copy is not a power cut.** The earliest trials copied the QEMU
    device file after the kill; the copy still contains writes the guest never
-   flushed. Fixed by the journal replay cut.
+   flushed. Fixed by the journal last-FLUSH replay.
 2. **Arm A was not a control.** The create workload called
-   `FlushFileBuffers(file)` unconditionally, which makes arm A (no candidate
+   `FlushFileBuffers(file)` unconditionally, which made arm A (no candidate
    flush) identical to arm B (flush the target file). Fixed by removing that
    call; the candidate flush is now the only flush in the create path.
 
-Every affected trial is kept in the rig's `e34-invalid/` directory with a
-README explaining why, and none of them is counted. The A and C trials above
-were run before the second fix, so they are also excluded; the current harness
-is `pe-e34N.iso` with `e34-matrix.sh` using journal replay.
+Both defects are documented in the rig's `e34-invalid/README.txt`, and none of
+the affected trials is counted. The A and C batches reported above were run on
+the fixed harness (`pe-e34N.iso`).
 
 ## What is running / missing
 
-* **done**: arm A (no candidate flush) 12 valid trials and arm C
-  (`FlushFileBuffers(parent directory)`) 10 valid trials, both `create` on the
-  large topology, each with the external manifest, a kept pre-recovery image,
-  the `$LogFile` decode and the raw-namespace dump;
 * **running**: arm B (`FlushFileBuffers(target file)`) and arm F
   (`FlushFileBuffers($I30 stream)`) batches of 10, same cell;
-* **not run**: arm I and the arm K control, the `rename`/`delete` workloads,
-  the small topology, and the secondary crash points.
-
-`E34-RESULTS.md` records exactly which cells exist, the per-trial classes and
-the recovery route; it does not merge arms and does not claim a general
-durability result.
+* **not run**: arm I, the arm K control, the `rename`/`delete` workloads, the
+  small topology, and the secondary crash points of E34-PLAN §7.
 
 ## What this does NOT establish
 
-* no arm has reached 30 valid trials yet, so no cell has a usable bound;
-* the storage model is QEMU `blklogwrites` with an offline last-flush cut, not
-  physical media — E34-PLAN section 15 still applies in full;
-* a single R4 says nothing about how often it holds;
+* a useful statistical bound: 10–12 trials per cell are far below the 30 that
+  §12 requires, so the only number is `p <= 25.9%` for the zero-failure arm C
+  cell — too weak to call a durability guarantee;
+* anything about physical media: the storage model is QEMU `blklogwrites` with
+  an offline last-FLUSH cut, and E34-PLAN §15 applies in full;
+* any general "NTFS is durable if you flush X" rule: the result is scoped to
+  the arm, operation and topology measured;
 * arm K remains a control only; the E26 withdrawal stands.
 
 ## CI coverage (run 45323673899)
