@@ -171,7 +171,7 @@ explaining each exclusion. None of them is counted above.
 | `$LogFile` decode and recovery check repeatable | **Yes**: `e34-preimage.py` / `e34-namespace.py` / `e34-recover.py` were run on a host other than the rig for the sample, and on the rig for all trials. |
 | Every trial has an independently recorded manifest | **Yes**: manifest and `E34DONE` live on the separate E34LOG volume. |
 | Both large and small topology have results | **No**: only large. |
-| Every primary arm reaches the required count (or the report says why not) | **No**: A and C only; B/F/I/K not started. |
+| Every primary arm reaches the required count (or the report says why not) | **No**: A (12), B (10), C (10), F (10) are all below 30; arm I and the arm K control are not started. The counts are stated instead of hidden. |
 | All failed and invalid trials retained and explained | **Yes**: `e34-invalid/README.txt` on the rig plus the defect section above. |
 | Final report separates observed behaviour from unprovable guarantees | **Yes**: see the two sections above. |
 
