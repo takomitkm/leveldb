@@ -107,6 +107,13 @@ under this crash model — what matters is that **some** flush commits the
 shared log after the index operation; the no-flush arm is the one that loses,
 and it loses only when writeback had not already reached the platter.
 
+One nuance matters for how strong a claim this supports: the **five arm A
+survivors also had a `positively identified` log record**, even though no
+flush was issued — writeback had committed it by luck. So the flush does not
+*make replay possible*; it *guarantees at API return* that the record the
+replay needs is already durable. Without the flush that is a race, and 7 of
+12 trials lost it.
+
 That distinction is exactly the E34 question, and it is not visible from a
 directory listing alone; it required the raw-namespace dump on the
 pre-recovery image. It also lines up with E33.1: the parent-directory flush
