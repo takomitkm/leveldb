@@ -39,21 +39,25 @@ Each trial is one sequence, all of it on the school QEMU rig:
 Both batches are arm/operation/topology cells of the same harness
 (`pe-e34N.iso`, journal cut at the last FLUSH, external E34LOG manifest):
 
-| Arm | Candidate flush | Op | Topology | Valid trials |
+| Arm | Candidate flush | Op | Topology | Trials (valid) |
 |---|---|---|---|---|
-| **A** | none (control) | create | large | 12 |
-| **B** | `FlushFileBuffers(target file)` | create | large | 10 |
-| **C** | `FlushFileBuffers(parent directory)` | create | large | 10 |
-| **F** | `FlushFileBuffers($I30:$INDEX_ALLOCATION stream)` | create | large | 10 |
+| **A** | none (control) | create | large | 30 (30) |
+| **B** | `FlushFileBuffers(target file)` | create | large | 30 (29) |
+| **C** | `FlushFileBuffers(parent directory)` | create | large | 10 (10), extension running |
+| **F** | `FlushFileBuffers($I30:$INDEX_ALLOCATION stream)` | create | large | 30 (30) |
 
 Classes (E34-PLAN.md §11), per trial, no merging:
 
-| Arm | R1 (confirmed op lost) | R3 | R4 (correct namespace + log evidence) | Total | Zero-failure bound |
-|---|---|---|---|---|---|
-| **A** | **7** | 0 | 5 | 12 | n/a (7 failures) |
-| **B** | 0 | 0 | **10** | 10 | `p <= 25.9%` |
-| **C** | 0 | 0 | **10** | 10 | `p <= 25.9%` |
-| **F** | 0 | 0 | **10** | 10 | `p <= 25.9%` |
+| Arm | R1 (confirmed op lost) | R3 | R4 (correct namespace + log evidence) | RX | Total | Zero-failure bound |
+|---|---|---|---|---|---|---|
+| **A** | **9** (30%) | 0 | 21 | 0 | 30 | n/a (9 failures) |
+| **B** | 0 | 0 | **29** | 1 | 30 | `p <= 9.8%` |
+| **C** | 0 | 0 | **10** | 0 | 10 | `p <= 25.9%` |
+| **F** | 0 | 0 | **30** | 0 | 30 | `p <= 9.5%` |
+
+The one B `RX` is a recovery boot that died before writing a report — an
+evidence gap, not a failed mount (the classifier now separates those: a
+missing report is RX, a reported failed mount is R0).
 
 Every trial in both arms had an intact evidence chain: external manifest on
 the E34LOG volume, pre-recovery image kept (SHA-256 recorded on the rig),
@@ -153,6 +157,29 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
 No arm is merged with another, and no claim is made that a specific flush API
 "guarantees" durability. The supported statement is the one above, for this
 cell and this crash model.
+
+## The crash point is "within a few seconds", not "immediate"
+
+The host detects the guest's completion by polling the E34LOG volume image in a
+loop with a 5 s sleep (plus one liveness check), so the power cut lands
+**roughly 0-6 s after the guest's `trial_end`**, not at the instant the
+candidate API returned. E34-PLAN.md §7 asks for the primary crash point to be
+immediately after the return.
+
+This does not invalidate the flush-arm result, but it does bound what it
+means: a flush that survives a cut 0-6 s later is weaker evidence than one
+that survives an immediate cut, because NTFS's lazy writer may have run in
+that window. It matters more for the no-flush arm, where the same window lets
+writeback commit the very records the flush is supposed to guarantee.
+
+The arm A split shows this is not academic: its first 12 trials lost **7**
+(58%) and its next 18 lost **2** (11%) — Fisher exact two-sided p = 0.0125, so
+the two batches are not drawn from one stable rate. The most plausible driver
+is exactly this delay window versus the lazy-writer tick, but the data here
+cannot separate that from other environment drift, so **no arm A loss rate
+should be quoted as a property of the no-flush shape** until the crash point
+is tightened (poll the marker at sub-second intervals and record the measured
+delay per trial).
 
 ## Harness defects found during E34 (both fixed, trials excluded)
 

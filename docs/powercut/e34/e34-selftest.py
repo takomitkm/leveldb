@@ -181,7 +181,8 @@ def test_classification():
                          True)
     check("R1 when a confirmed create is lost", v["class"] == "R1", v)
 
-    v = recover.classify(_info(), pre_ok, {"dir_readable": False}, True)
+    v = recover.classify(_info(), pre_ok,
+                         {"dir_readable": False, "report_present": True}, True)
     check("R0 when the directory cannot be listed", v["class"] == "R0", v)
 
     v = recover.classify(_info(), pre_ok,
@@ -248,6 +249,16 @@ def test_classification():
         {"dir_readable": True, "expected_present": False}, True)
     check("a failed flush is not counted as a lost operation",
           v["class"] == "R3", v)
+
+    # a missing recovery report is an evidence gap (RX), not a failed mount
+    v = recover.classify(
+        _info(), pre_ok,
+        {"dir_readable": False, "report_present": False}, True)
+    check("no recovery report is RX, not R0", v["class"] == "RX", v)
+    v = recover.classify(
+        _info(), pre_ok,
+        {"dir_readable": False, "report_present": True}, True)
+    check("a reported failed mount is R0", v["class"] == "R0", v)
 
     # arm A (no candidate flush) is classified by outcome: a missing entry is
     # a lost confirmed operation, not a free R3.

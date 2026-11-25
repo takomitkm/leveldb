@@ -143,7 +143,10 @@ def check_recovery_report(report: str, info: dict) -> dict:
     out = {"root": "guest-report", "dir": info.get("dir"), "listing": names,
            "expected_present": None, "expected_absent": None,
            "dir_readable": result is not None and bool(result.get("ok")),
-           "report": result}
+           "report": result,
+           # A missing report is an evidence-chain gap, not a failed mount:
+           # the recovery guest may simply not have got that far.
+           "report_present": result is not None}
     if names is None:
         out["dir_readable"] = False
         return out
@@ -220,6 +223,10 @@ def classify(info: dict, pre: Optional[dict], vol: Optional[dict],
     if not trial_valid:
         return {"class": RX, "reasons": ["trial marked invalid by the harness"]}
     if vol is None or not vol.get("dir_readable"):
+        if vol is not None and not vol.get("report_present", False):
+            return {"class": RX, "reasons": [
+                "the recovery guest produced no report (boot or capture "
+                "failed); the namespace was never observed"]}
         return {"class": R0, "reasons": ["the recovered directory could not be "
                                          "listed"]}
     if info.get("op_status") not in (None, "ok"):
