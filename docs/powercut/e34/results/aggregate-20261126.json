@@ -1,77 +1,77 @@
 {
- "trials_total": 42,
+ "trials_total": 120,
  "per_arm": {
   "A/create": {
-   "trials": 12,
-   "valid_trials": 12,
+   "trials": 30,
+   "valid_trials": 30,
    "classes": {
     "R0": 0,
-    "R1": 7,
+    "R1": 9,
     "R2": 0,
     "R3": 0,
-    "R4": 5,
+    "R4": 21,
     "RX": 0
    },
-   "confirmed_lost": 7,
-   "confirmed_recovered": 5,
+   "confirmed_lost": 9,
+   "confirmed_recovered": 21,
    "failure_probability_upper_bound_95": null,
    "preimage_states": {
-    "overwritten": 7,
-    "positively identified": 5
+    "overwritten": 9,
+    "positively identified": 21
    }
   },
   "B/create": {
-   "trials": 10,
-   "valid_trials": 10,
+   "trials": 30,
+   "valid_trials": 29,
    "classes": {
     "R0": 0,
     "R1": 0,
     "R2": 0,
     "R3": 0,
-    "R4": 10,
-    "RX": 0
+    "R4": 29,
+    "RX": 1
    },
    "confirmed_lost": 0,
-   "confirmed_recovered": 10,
-   "failure_probability_upper_bound_95": 0.2589,
+   "confirmed_recovered": 29,
+   "failure_probability_upper_bound_95": 0.0981,
    "preimage_states": {
-    "positively identified": 10
+    "positively identified": 30
    }
   },
   "C/create": {
-   "trials": 10,
-   "valid_trials": 10,
+   "trials": 30,
+   "valid_trials": 30,
    "classes": {
     "R0": 0,
     "R1": 0,
     "R2": 0,
     "R3": 0,
-    "R4": 10,
+    "R4": 30,
     "RX": 0
    },
    "confirmed_lost": 0,
-   "confirmed_recovered": 10,
-   "failure_probability_upper_bound_95": 0.2589,
+   "confirmed_recovered": 30,
+   "failure_probability_upper_bound_95": 0.095,
    "preimage_states": {
-    "positively identified": 10
+    "positively identified": 30
    }
   },
   "F/create": {
-   "trials": 10,
-   "valid_trials": 10,
+   "trials": 30,
+   "valid_trials": 30,
    "classes": {
     "R0": 0,
     "R1": 0,
     "R2": 0,
     "R3": 0,
-    "R4": 10,
+    "R4": 30,
     "RX": 0
    },
    "confirmed_lost": 0,
-   "confirmed_recovered": 10,
-   "failure_probability_upper_bound_95": 0.2589,
+   "confirmed_recovered": 30,
+   "failure_probability_upper_bound_95": 0.095,
    "preimage_states": {
-    "positively identified": 10
+    "positively identified": 30
    }
   }
  },

@@ -68,15 +68,25 @@ replay.
 
 The interesting part is not only whether the entry survived, but *how*:
 
-| Arm | Survived | Survivors already on the platter | Survivors restored by replay | Lost |
+| Arm | Survived | Already on the platter at cut | Restored by replay | Lost |
 |---|---|---|---|---|
-| **A** | 5 / 12 | **5** (every survivor) | 0 | 7 / 12 |
-| **B** | 10 / 10 | 2 | **8** | 0 / 10 |
-| **C** | 10 / 10 | 3 | **7** | 0 / 10 |
-| **F** | 10 / 10 | 4 | **6** | 0 / 10 |
+| **A** | 21 / 30 | 21 | 0 | 9 / 30 |
+| **B** | 29 / 29 | 13 | **16** | 0 |
+| **C** | 30 / 30 | 23 | **7** | 0 |
+| **F** | 30 / 30 | 15 | **15** | 0 |
 
-The raw namespace was checked on **all 42** pre-recovery images (one image at
-a time, `dump-namespaces.py`), so this table is complete, not a sample.
+The raw namespace was checked on **every** pre-recovery image (120 of 120,
+`dump-namespaces.py`), so this table is complete, not a sample.
+
+**Do not read the last two columns as an arm effect.** The crash delay is
+uncontrolled (next section), and it is exactly the window in which NTFS's
+lazy writer can put the entry on the platter. The per-arm share of "already
+on the platter" therefore mixes the arm's flush with however long that batch
+happened to take to die; the cross-arm differences here (e.g. C 23/7 vs B
+13/16, Fisher p = 0.017) are **not** attributable to the flush. What the
+column does support is within-arm and qualitative: in 15 of 30 arm F trials
+and 16 of 29 arm B trials the index page was demonstrably **not** on the
+platter at cut time, i.e. those flushes did not write it.
 
 So the two arms reach the same "survived" state by different routes:
 
@@ -160,14 +170,9 @@ cell and this crash model.
 
 ## B vs F: flushing the file and flushing the `$I30` stream are equivalent here
 
-At 30 trials each the two arms are indistinguishable:
-
-| | trials | R4 | recovered by replay | already on the platter | replay share |
-|---|---|---|---|---|---|
-| **B** (file) | 30 | 29 (+1 RX) | 16 | 13 | 55% |
-| **F** (`$I30` stream) | 30 | 30 | 15 | 15 | 50% |
-
-Fisher exact two-sided **p = 0.796** on the replay/durable split.
+At 30 trials each the two arms are indistinguishable: B 29/29 R4 (plus one
+evidence-gap RX), F 30/30 R4; and their replay/durable split is 16/13 vs
+15/15, Fisher exact two-sided **p = 0.796**.
 
 That is expected once the mechanism is right: the `$I30` handle points at the
 directory's index-allocation stream, which is the object that *could* carry
@@ -232,11 +237,12 @@ negative result, and they must not be reported as if they had been measured.
 
 ## Machine-readable record
 
-`e34/results/aggregate-20261124.json` and `.csv` are the per-arm aggregate
-produced by `e34-aggregate.py`; `e34/results/trials-20261124.csv` is the
-per-trial table (class, recovery source, flush status, and whether the raw
-namespace already held the name). Both are generated from the trial JSONs, not
-hand-written.
+`e34/results/aggregate-20261126.json` and `.csv` are the per-arm aggregate
+produced by `e34-aggregate.py` over all 120 trials; `e34/results/trials-20261126.csv`
+is the per-trial table (class, recovery source, flush status, and whether the
+raw namespace already held the name). Both are generated from the trial JSONs,
+not hand-written. The earlier `*-20261124` files were the 42-trial subset and
+are superseded by these.
 
 ## Reproduce
 
