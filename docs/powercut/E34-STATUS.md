@@ -73,10 +73,12 @@ the fixed harness (`pe-e34N.iso`).
 * **E34.1 (chain proved, 1 trial)**: the guest writes a short `E34CUT` token
   immediately after the candidate flush returns, to a pre-allocated file at a
   fixed offset in the E34LOG image; the host watches that offset unbuffered
-  and force-kills QEMU. First validated trial: `B-imm-6`, detect-to-kill
-  **65 ms** (vs 0-6 s with E34LOG polling), pre-recovery `$LogFile` positively
-  identified, Windows replay reported the file present. Scripts:
-  `e34/e34-trigger-watch.py`, `e34/e34-run-immediate.sh`;
+  and force-kills QEMU. The first chain used a PowerShell `Stop-Process` with a ~2.3 s cold start
+  (trials quarantined in `e34-invalid/e34.2-slowkill/`); the replacement watcher
+  calls `TerminateProcess` directly (falling back to `taskkill -F -PID`). First
+  receipt with the final code: detect -> kill request **3.2 microseconds**,
+  kill request -> process exit **301 ms**, mechanism `terminateprocess`.
+  Scripts: `e34/e34-trigger-watch.py`, `e34/e34-run-immediate.sh`;
 * **not yet established**: that a flush-arm record is durable *at the instant
   of API return*. That needs the randomised A/B/C batch under this new
   trigger (next step), not one B trial;

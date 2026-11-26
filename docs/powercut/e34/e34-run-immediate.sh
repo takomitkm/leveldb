@@ -27,22 +27,23 @@ PID=$(printf '%s' "$OUT" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 [ -z "$PID" ] && { echo NO-PID; exit 4; }
 echo "vm-pid=$PID"
 
-# --- immediate trigger watcher + monotonic timing -------------------------
+# --- immediate trigger watcher + native kill ------------------------------
+# The watcher itself calls TerminateProcess on detection: no PowerShell cold
+# start (~2.3 s) on the critical path.  It records detection, kill request and
+# kill completion with a monotonic clock in the receipt.
 T0=$(python -c 'import time;print(time.monotonic_ns())')
-python e34-trigger-watch.py "$LOGVOL" 3114496 600 > "$D/detect.txt" 2>&1
+python e34-trigger-watch.py "$LOGVOL" 3114496 600 token \
+  --kill-pid "$PID" --out "$D/kill-receipt.json" > "$D/detect.txt" 2>&1
 RC=$?
-T1=$(python -c 'import time;print(time.monotonic_ns())')
-echo "watch rc=$RC t0=$T0 t1=$T1"
+echo "watch rc=$RC t0=$T0"
 cat "$D/detect.txt"
-if [ "$RC" != 0 ]; then echo "TRIGGER-TIMEOUT"; fi
-
-# kill immediately, no graceful shutdown
-TK=$(python -c 'import time;print(time.monotonic_ns())')
-powershell.exe -NoProfile -Command "Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue"
+if [ "$RC" != 0 ]; then
+  echo "TRIGGER-TIMEOUT"
+  powershell.exe -NoProfile -Command "Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue"
+fi
 sleep 2
-TD=$(python -c 'import time;print(time.monotonic_ns())')
-echo "TIMING detect_to_kill_ns=$((TK-T1)) kill_duration_ns=$((TD-TK))"
-echo "$T0 $T1 $TK $TD" > "$D/timing.txt"
+echo "$T0" > "$D/timing.txt"
+cat "$D/kill-receipt.json" >> "$D/timing.txt" 2>/dev/null || true
 
 # journal replay to the last FLUSH barrier (the power-cut image)
 python e14_analyze.py replay "$JRN" "$VM" "$CUT" LAST 2>&1 | tail -2
@@ -57,8 +58,9 @@ OUT2=$(powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$T/e34-launch2.p
 PID2=$(printf '%s' "$OUT2" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 if [ -n "$PID2" ]; then
   LOGVOL2="$RLOG"
-  python e34-trigger-watch.py "$LOGVOL2" 3114496 600 change > "$D/detect-rec.txt" 2>&1 || echo "recover trigger timeout"
-  powershell.exe -NoProfile -Command "Stop-Process -Id $PID2 -Force -ErrorAction SilentlyContinue"
+  python e34-trigger-watch.py "$LOGVOL2" 3114496 600 change \
+    --kill-pid "$PID2" --out "$D/kill-receipt-rec.json" \
+    > "$D/detect-rec.txt" 2>&1 || echo "recover trigger timeout"
   sleep 2
 fi
 
