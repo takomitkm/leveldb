@@ -21,21 +21,35 @@ matrix cell (`create`, large topology):
 
 ## Result so far (see E34-RESULTS.md for the tables)
 
-* **arm C** (`FlushFileBuffers(parent directory)`), 10 valid trials: **10 R4,
-  0 lost**. In 7 of the 10 the raw namespace was **empty** and the entry came
-  back only through Windows' log replay; the other 3 already had it on the
-  platter.
-* **arm B** (`FlushFileBuffers(target file)`): **10/10 R4**; 8 of the 10 had an
-  empty raw namespace and came back only through replay.
-* **arm F** (`FlushFileBuffers($I30:$INDEX_ALLOCATION stream)`): **10/10 R4**,
-  log record present in all 10; raw-namespace classification still running.
-* **arm A** (no candidate flush), 12 valid trials: **7 R1 (lost)**, 5 R4. All
-  5 survivors already had the entry on the platter; no arm A trial was rescued
-  by replay.
-* That gives the mechanism: the parent-directory flush does not write the
-  index page (consistent with E17/E21 and with E33.1's "L3 but no L4"), but it
-  makes the `$LogFile` `AddIndexEntryRoot` record durable, and NTFS's own
-  replay rebuilds the entry after the power cut.
+Four cells of 30 trials each (`create` / large topology), 120 trials total:
+
+| Arm | Candidate flush | Trials (valid) | Classes |
+|---|---|---|---|
+| A | none (control) | 30 (30) | **9 R1 lost**, 21 R4 |
+| B | `FlushFileBuffers(target file)` | 30 (29) | 29 R4, 1 RX (recovery boot died) |
+| C | `FlushFileBuffers(parent directory)` | 30 (30) | **30 R4** |
+| F | `FlushFileBuffers($I30:$INDEX_ALLOCATION stream)` | 30 (30) | **30 R4** |
+
+Zero-failure bound: `p <= 9.5%` for C and F, `p <= 9.8%` for B.
+
+* The three flush shapes are **indistinguishable** (B 29/29, C 30/30, F 30/30;
+  the B-vs-F replay/durable split gives Fisher p = 0.796). What they commit is
+  the volume's shared `$LogFile`, not the index page: in roughly half the
+  flush trials the raw namespace was still empty and Windows' replay produced
+  the name.
+* The no-flush arm loses entries, but its measured rate is **not stable**:
+  7/12 in the first batch vs 2/18 in the second (Fisher p = 0.0125). The most
+  plausible driver is the crash-point window below.
+
+### Crash-point precision caveat
+
+The host polls the E34LOG volume with a 5 s sleep plus a liveness check, so
+the power cut lands roughly **0-6 s after the guest's `trial_end`**, not
+immediately after the candidate API returned. Flush-arm results are therefore
+"durable through a cut up to ~6 s later", which is weaker than "durable
+immediately"; and the no-flush arm's loss rate is sensitive to that window
+because the lazy writer can run inside it. Tightening the crash point is the
+next harness change, not a reinterpretation of the data.
 
 ## Harness defects found and fixed (trials quarantined)
 
