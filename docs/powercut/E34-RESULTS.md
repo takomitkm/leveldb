@@ -80,13 +80,25 @@ The raw namespace was checked on **every** pre-recovery image (120 of 120,
 
 **Do not read the last two columns as an arm effect.** The crash delay is
 uncontrolled (next section), and it is exactly the window in which NTFS's
-lazy writer can put the entry on the platter. The per-arm share of "already
-on the platter" therefore mixes the arm's flush with however long that batch
-happened to take to die; the cross-arm differences here (e.g. C 23/7 vs B
-13/16, Fisher p = 0.017) are **not** attributable to the flush. What the
-column does support is within-arm and qualitative: in 15 of 30 arm F trials
-and 16 of 29 arm B trials the index page was demonstrably **not** on the
-platter at cut time, i.e. those flushes did not write it.
+lazy writer can put the entry on the platter. The split shifts by **batch**,
+not by arm:
+
+| Arm | first batch (already durable / replayed) | second batch |
+|---|---|---|
+| A | 5 / 0 (of 12) | 16 / 0 (of 18) |
+| B | 2 / 8 (of 10) | 11 / 8 (of 20, +1 RX) |
+| C | 3 / 7 (of 10) | **20 / 0** (of 20) |
+| F | 4 / 6 (of 10) | 11 / 9 (of 20) |
+
+Arm C is the clearest case: its first batch needed replay in 7 of 10 trials,
+its second batch in 0 of 20 — same ISO, same probe, same harness. That is a
+batch-level drift in the crash timing, and it is larger than any cross-arm
+difference here. So the cross-arm split (e.g. C 23/7 vs B 13/16, Fisher
+p = 0.017) is **not** attributable to the flush.
+
+What the column does support is within-arm and qualitative: in 16 of 29 arm B
+trials and 15 of 30 arm F trials the index page was demonstrably **not** on
+the platter at cut time, i.e. those flushes did not write it.
 
 So the two arms reach the same "survived" state by different routes:
 
