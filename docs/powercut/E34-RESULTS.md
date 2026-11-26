@@ -100,51 +100,37 @@ What the column does support is within-arm and qualitative: in 16 of 29 arm B
 trials and 15 of 30 arm F trials the index page was demonstrably **not** on
 the platter at cut time, i.e. those flushes did not write it.
 
-So the two arms reach the same "survived" state by different routes:
+So the four arms reach their outcomes by different routes:
 
-* **arm A is a coin flip.** 7 of 12 trials lost the confirmed create outright
-  (`present=0, entries=0` after the recovery boot) and their raw namespace was
-  empty too. Their pre-recovery decode reported the record as **overwritten**
-  — the surviving log snapshot no longer carried it, which is not proof it was
-  never written, only that the snapshot could not restore it. The 5 survivors
-  all had the entry **already on the platter**; no arm A trial was rescued by
-  replay. That is what a namespace change left to NTFS writeback timing looks
-  like.
-* **arm C never lost, and mostly by a different mechanism.** In 7 of the 10
-  trials the raw namespace was **empty** — the parent-directory flush did not
-  put the index entry on the platter — yet the name was there after Windows
-  replayed the log. The other 3 already had it on the platter. So the flush's
-  value is the **`$LogFile` barrier**, not an index-page write: it makes the
-  `AddIndexEntryRoot` record durable, and NTFS's own replay reconstructs the
-  entry.
-* **arm B** (`FlushFileBuffers(target file)`) also never lost, 10/10, and its
-  pre-recovery decode carries the same `AddIndexEntryRoot` record for every
-  trial. Its raw namespace was empty in 8 of 10, so it too came back mostly
-  through replay. That is the same mechanism: NTFS has one log per volume, so
-  flushing the file commits the log entries the index operation had already
-  written.
-* **arm F** (`FlushFileBuffers` on the `$I30:$INDEX_ALLOCATION` stream, the
-  handle E33.1 found needs `FILE_FLAG_BACKUP_SEMANTICS`): 10/10 restored, the
-  pre-recovery decode carries the record for all 10, and 6 of 10 came back
-  only through replay.
+* **arm A (no flush) is a coin flip, and its rate is unstable.** 9 of 30 trials
+  lost the confirmed create outright (`present=0, entries=0` after the recovery
+  boot) and their raw namespace was empty too; their pre-recovery decode
+  reported the record as **overwritten** — the surviving log snapshot no longer
+  carried it, which is not proof it was never written, only that the snapshot
+  could not restore it. The 21 survivors all had the entry **already on the
+  platter**; no arm A trial was rescued by replay. Between batches the loss
+  count moved 7/12 -> 2/18, so the 9/30 is not a stable rate (see the
+  crash-point section above).
+* **arm C (parent-directory flush) never lost.** 7 of its 30 trials had an empty
+  raw namespace and were restored by replay; 23 already had the entry on the
+  platter. That 7/23 split drifts by batch (3/7 then 20/0), so it is a timing
+  artifact, not an arm property.
+* **arm B (flush the target file) never lost** (29/29; one evidence-gap RX),
+  with 16 of 29 needing replay and 13 already on the platter.
+* **arm F (flush the `$I30:$INDEX_ALLOCATION` stream)** never lost either
+  (30/30), with 15 of 30 needing replay.
 
-Taken together, the three flush arms are indistinguishable on this metric
-under this crash model — what matters is that **some** flush commits the
-shared log after the index operation; the no-flush arm is the one that loses,
-and it loses only when writeback had not already reached the platter.
+Across all **89 valid flush-arm trials** the confirmed create survived and the
+pre-recovery snapshot carried the matching `AddIndexEntryRoot`. **Because the
+power cut landed 0-6 s after the API returned, these trials do not establish
+that the log record was already durable at the instant the API returned** —
+only that it was durable somewhere inside that window. Closing this is the
+next experiment (E34.1, an immediate trigger driven by the guest's own
+`flush_end` event).
 
-One nuance matters for how strong a claim this supports: the **five arm A
-survivors also had a `positively identified` log record**, even though no
-flush was issued — writeback had committed it by luck. So the flush does not
-*make replay possible*; it *guarantees at API return* that the record the
-replay needs is already durable. Without the flush that is a race, and 7 of
-12 trials lost it.
-
-That distinction is exactly the E34 question, and it is not visible from a
-directory listing alone; it required the raw-namespace dump on the
-pre-recovery image. It also lines up with E33.1: the parent-directory flush
-reached the log pages with a barrier (L3) but never wrote the `$I30` home page
-(no L4) — E34 shows what that combination is worth after a power cut.
+What the data does support: the flush shapes are interchangeable *as far as
+this measurement can tell* (B vs F, Fisher p = 0.796 — no difference detected,
+**not** an equivalence proof), and the no-flush arm is the only one that loses.
 
 ## What this does and does not establish
 
@@ -166,9 +152,14 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
 
 **Not established:**
 
-* a useful bound: 10 and 12 trials are far below the 30 §12 requires. The only
-  number available is `p <= 25.9%` for the zero-failure arm C cell, which is
-  too weak to call a durability guarantee;
+* **durability at the instant of API return** — the crash landed 0-6 s later,
+  so the flush arms only bound "durable inside that window"; E34.1 exists to
+  close exactly this gap;
+* an **equivalence proof** for the flush shapes: B vs F gave Fisher p = 0.796,
+  which is "no difference detected at n = 29/30", not proof that the APIs are
+  equivalent;
+* a tight statistical bound: at 30 trials per cell the zero-failure arms bound
+  the failure rate at `p <= 9.5%` (B 9.8%); reaching ~3% needs ~100 per arm;
 * arm I and the arm K control;
 * the `rename` and `delete` workloads;
 * the small topology;

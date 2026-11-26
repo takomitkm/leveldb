@@ -1,4 +1,4 @@
-# E34 — Status: create/large matrix done, B/F running
+# E34 — Status: create/large matrix done (4 x 30); next is E34.1, an immediate crash trigger
 
 **Date:** 2026-11-24
 **Branch:** `e34-ntfs-index-crash-replay`
@@ -65,21 +65,34 @@ Both defects are documented in the rig's `e34-invalid/README.txt`, and none of
 the affected trials is counted. The A and C batches reported above were run on
 the fixed harness (`pe-e34N.iso`).
 
-## What is running / missing
+## What is done / what is next
 
-* **not run**: arm I, the arm K control, the `rename`/`delete` workloads, the
-  small topology, and the secondary crash points of E34-PLAN §7.
+* **done**: all four `create`/large cells at 30 trials each (A 30, B 30, C 30,
+  F 30 = 120), each with the external manifest, a kept pre-recovery image plus
+  its SHA-256, the `$LogFile` decode and the raw-namespace dump;
+* **next (E34.1)**: replace the E34LOG file polling with an immediate trigger
+  driven by the guest's own `flush_end` event, and record the measured
+  API-return-to-kill delay per trial. Until that lands, the flush-arm result
+  means "durable through a cut 0-6 s later", not "durable at API return";
+* **then (E34.2)**: re-run A/B/C with the new trigger, randomised and
+  interleaved rather than batched, 30 per arm before deciding on 100;
+* **not run**: arm I, the arm K control, `rename`/`delete`, the small topology,
+  and the secondary crash points of E34-PLAN §7;
+* **after E34**: E35 runs the real LevelDB commit order (SST create + sync,
+  MANIFEST append + sync, CURRENT rename) instead of a bare file create.
 
 ## What this does NOT establish
 
-* a useful statistical bound: 10–12 trials per cell are far below the 30 that
-  §12 requires, so the only number is `p <= 25.9%` for the zero-failure B/C/F
-  cells — too weak to call a durability guarantee;
+* a useful statistical bound beyond `p <= 9.5%` per zero-failure arm: reaching
+  ~3% needs ~100 trials per arm, and none of these bounds is a durability
+  guarantee;
 * anything about physical media: the storage model is QEMU `blklogwrites` with
   an offline last-FLUSH cut, and E34-PLAN §15 applies in full;
 * any general "NTFS is durable if you flush X" rule: the result is scoped to
   the arm, operation and topology measured;
-* arm K remains a control only; the E26 withdrawal stands.
+* arm K remains a control only; the E26 withdrawal stands;
+* **durability at the instant of API return** — the 0-6 s crash window is the
+  specific gap E34.1 closes.
 
 ## CI coverage (run 45323673899)
 
