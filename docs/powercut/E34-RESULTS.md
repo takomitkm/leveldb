@@ -258,18 +258,33 @@ are superseded by these.
 
 ## Reproduce
 
-On the QEMU rig (school machine, `school-guest-pc2`):
+On the QEMU rig (school machine, reached through `school-guest-pc2`), with the
+WinPE ISO built by the genisoimage recipe (`docs/powercut/e17_gbld.sh` lineage)
+and the two volumes `e34-base.img` / `e34log.img` in place:
 
 ```
-bash e34-matrix.sh <arm> <op> <topo> <n-trials> [start-index]
-bash e34-analyze-rig.sh          # pre-recovery $LogFile decode per trial
+bash e34-matrix2.sh <arm> <op> <topo> <n-trials> <start-index>
+#   per trial: probe trial -> blklogwrites journal replayed to the LAST FLUSH
+#   (docs/powercut/e14_analyze.py replay <journal> <disk> <cut> LAST)
+#   -> Windows recovery boot (MODE=recover) -> in-place finalise: preimage
+#   decode, gzip the pre-recovery image and the journal, drop the raw files
+bash e34-stage.sh <arm>-<op>-<topo>
+#   copies each compressed pre-recovery image into the SSH home as
+#   e34-pre-<cell>-<tag>.gz, appends its SHA-256, tars the small artifacts
+bash e34-analyze-rig.sh
+#   pre-recovery $LogFile decode for every trial with a raw image left
 ```
 
-Analysis elsewhere (needs Python + `pytsk3`):
+`e34-matrix.sh` is the earlier version of the runner (kept for the first
+batches: it leaves the raw images in place and relies on `e34-finalize.sh`).
+The journal-replay engine is `docs/powercut/e14_analyze.py` — `replay ... LAST`
+cuts the disk at the last FLUSH barrier; there is no separate copy in `e34/`.
+
+Analysis elsewhere (Python + `pytsk3`):
 
 ```
-python dump-namespaces.py --list <list> --work-dir <dir> --out namespaces.jsonl
-python e34-recover.py --manifest ... --preimage ... --recovery-report ... \
-    --pre-namespace ...
-python e34-aggregate.py --trials results/*.json --out aggregate.json
+python dump-namespaces.py --list <staged list> --work-dir <dir> --out ns.jsonl
+python e34-collect.py --work-dir <per-trial dirs> --namespaces ns.jsonl     --out-dir results
+python e34-aggregate.py --trials "results/*.json" --out aggregate.json --csv aggregate.csv
 ```
+
