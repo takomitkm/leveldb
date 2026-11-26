@@ -43,7 +43,7 @@ Both batches are arm/operation/topology cells of the same harness
 |---|---|---|---|---|
 | **A** | none (control) | create | large | 30 (30) |
 | **B** | `FlushFileBuffers(target file)` | create | large | 30 (29) |
-| **C** | `FlushFileBuffers(parent directory)` | create | large | 10 (10), extension running |
+| **C** | `FlushFileBuffers(parent directory)` | create | large | 30 (30) |
 | **F** | `FlushFileBuffers($I30:$INDEX_ALLOCATION stream)` | create | large | 30 (30) |
 
 Classes (E34-PLAN.md §11), per trial, no merging:
@@ -52,7 +52,7 @@ Classes (E34-PLAN.md §11), per trial, no merging:
 |---|---|---|---|---|---|---|
 | **A** | **9** (30%) | 0 | 21 | 0 | 30 | n/a (9 failures) |
 | **B** | 0 | 0 | **29** | 1 | 30 | `p <= 9.8%` |
-| **C** | 0 | 0 | **10** | 0 | 10 | `p <= 25.9%` |
+| **C** | 0 | 0 | **30** | 0 | 30 | `p <= 9.5%` |
 | **F** | 0 | 0 | **30** | 0 | 30 | `p <= 9.5%` |
 
 The one B `RX` is a recovery boot that died before writing a report — an
@@ -128,19 +128,19 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
 
 **Established for this cell (arm/op/topology as stated, this rig):**
 
-* After a successful parent-directory flush followed immediately by the
-  modelled power cut, NTFS log replay restored the confirmed create in
-  **10/10** trials, and the pre-recovery `$LogFile` independently carried the
-  matching `AddIndexEntryRoot` record in all 10.
-* The same held for `FlushFileBuffers(target file)` and for the
-  `$I30:$INDEX_ALLOCATION` stream flush: **10/10** each, log record present in
-  all 10 — the three flush shapes are indistinguishable on this metric here.
-* The no-flush control lost the same confirmed create in **7/12** trials, so
+* Across **89 valid flush-arm trials** (B 29, C 30, F 30) the confirmed
+  create was present after the modelled power cut **89/89**, and the
+  pre-recovery `$LogFile` independently carried the matching
+  `AddIndexEntryRoot` record in **all 89**.
+* The three flush shapes are indistinguishable: B 29/29, C 30/30, F 30/30,
+  and the B-vs-F replay split is p = 0.796.
+* The no-flush control lost the same confirmed create in **9/30** trials, so
   the harness discriminates and the result is not "everything always
-  survives".
+  survives" — but see the crash-point caveat below: that 9/30 is not a stable
+  rate.
 * The recovery route for most flush-arm trials was log replay, not a direct
-  index write: the raw namespace was empty in 7 of 10 arm C trials and 8 of 10
-  arm B trials, and only the replay produced the name.
+  index write: the raw namespace was empty in 15 of 30 arm F trials, 16 of 29
+  arm B trials and (see the per-trial CSV) a similar share of arm C.
 
 **Not established:**
 
@@ -157,6 +157,24 @@ reached the log pages with a barrier (L3) but never wrote the `$I30` home page
 No arm is merged with another, and no claim is made that a specific flush API
 "guarantees" durability. The supported statement is the one above, for this
 cell and this crash model.
+
+## B vs F: flushing the file and flushing the `$I30` stream are equivalent here
+
+At 30 trials each the two arms are indistinguishable:
+
+| | trials | R4 | recovered by replay | already on the platter | replay share |
+|---|---|---|---|---|---|
+| **B** (file) | 30 | 29 (+1 RX) | 16 | 13 | 55% |
+| **F** (`$I30` stream) | 30 | 30 | 15 | 15 | 50% |
+
+Fisher exact two-sided **p = 0.796** on the replay/durable split.
+
+That is expected once the mechanism is right: the `$I30` handle points at the
+directory's index-allocation stream, which is the object that *could* carry
+the index page, but at flush time the new entry has not reached that stream's
+dirty data yet (it lives in the in-memory index buffer and in the log). So F
+flushes nothing relevant on the index side either, and what both arms really
+commit is the volume's **shared `$LogFile`**.
 
 ## The crash point is "within a few seconds", not "immediate"
 
