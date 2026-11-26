@@ -1,0 +1,79 @@
+{
+ "trials_total": 120,
+ "per_arm": {
+  "A/create": {
+   "trials": 30,
+   "valid_trials": 30,
+   "classes": {
+    "R0": 0,
+    "R1": 9,
+    "R2": 0,
+    "R3": 0,
+    "R4": 21,
+    "RX": 0
+   },
+   "confirmed_lost": 9,
+   "confirmed_recovered": 21,
+   "failure_probability_upper_bound_95": null,
+   "preimage_states": {
+    "overwritten": 9,
+    "positively identified": 21
+   }
+  },
+  "B/create": {
+   "trials": 30,
+   "valid_trials": 29,
+   "classes": {
+    "R0": 0,
+    "R1": 0,
+    "R2": 0,
+    "R3": 0,
+    "R4": 29,
+    "RX": 1
+   },
+   "confirmed_lost": 0,
+   "confirmed_recovered": 29,
+   "failure_probability_upper_bound_95": 0.0981,
+   "preimage_states": {
+    "positively identified": 30
+   }
+  },
+  "C/create": {
+   "trials": 30,
+   "valid_trials": 30,
+   "classes": {
+    "R0": 0,
+    "R1": 0,
+    "R2": 0,
+    "R3": 0,
+    "R4": 30,
+    "RX": 0
+   },
+   "confirmed_lost": 0,
+   "confirmed_recovered": 30,
+   "failure_probability_upper_bound_95": 0.095,
+   "preimage_states": {
+    "positively identified": 30
+   }
+  },
+  "F/create": {
+   "trials": 30,
+   "valid_trials": 30,
+   "classes": {
+    "R0": 0,
+    "R1": 0,
+    "R2": 0,
+    "R3": 0,
+    "R4": 30,
+    "RX": 0
+   },
+   "confirmed_lost": 0,
+   "confirmed_recovered": 30,
+   "failure_probability_upper_bound_95": 0.095,
+   "preimage_states": {
+    "positively identified": 30
+   }
+  }
+ },
+ "note": "the 95% upper bound applies only to arms with zero failures and only to the tested conditions"
+}

@@ -1,0 +1,110 @@
+name: e33-tier1-ntfs-log
+
+# E33.1 Tier-1: NTFS $LogFile flush attribution for directory-index changes.
+# Per-arm wpr DiskIO ETW sessions (custom profile adds rig markers), raw
+# $MFT/$LogFile extraction, full-page $LogFile decoding, and per-call L3
+# barrier attribution.
+# Runtime ~30-45 minutes depending on reps.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e33-tier1-ntfs-log.yml'
+      - 'docs/powercut/e33/**'
+
+jobs:
+  e33:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk |
+            Select-Object DeviceID, FileSystem, DriveType,
+              @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} |
+            Format-Table | Out-String | Write-Host
+          Get-Partition -DriveLetter D |
+            Select-Object DiskNumber, PartitionNumber, Offset |
+            Format-List | Out-String | Write-Host
+
+      - name: Record code SHA
+        shell: pwsh
+        run: |
+          $sha = $env:GITHUB_SHA
+          $run = $env:GITHUB_RUN_ID
+          [pscustomobject]@{ commit_sha = $sha; run_id = $run
+                              workflow = $env:GITHUB_WORKFLOW
+                              repository = $env:GITHUB_REPOSITORY
+                              built_at = (Get-Date).ToUniversalTime().ToString('o') } |
+            ConvertTo-Json | Set-Content -Path 'e33-build-info.json' -Encoding UTF8
+          Get-Content 'e33-build-info.json'
+
+      - name: Python decoder selftests
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e33/e33_logfile_decode.py --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py docs/powercut/e33/e33_mft.py --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run E33 arms
+        shell: pwsh
+        run: |
+          & (Join-Path $pwd 'docs/powercut/e33/run-e33.ps1') `
+              -Volume D: -Reps 20 -NoPause
+          $code = $LASTEXITCODE
+          Write-Host "E33 script exit: $code"
+          # Keep the generating SHA next to the evidence it produced.
+          $art = Get-ChildItem -Recurse -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if ($art -and (Test-Path 'e33-build-info.json')) {
+            Copy-Item 'e33-build-info.json' -Destination $art.FullName -Force
+          }
+          if ($code -ne 0) { exit $code }
+
+      - name: Parse ETW (typed DiskIo payloads)
+        if: always()
+        shell: pwsh
+        run: |
+          $art = Get-ChildItem -Recurse -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e33/e33_etw_analyze.py `
+            --etw-dir (Join-Path $art.FullName 'etw') `
+            --out (Join-Path $art.FullName 'etw-summary.json') `
+            --csv (Join-Path $art.FullName 'etw-summary.csv')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content (Join-Path $art.FullName 'etw-summary.csv')
+
+      - name: Decode $LogFile and attribute target pages / barriers
+        if: always()
+        shell: pwsh
+        run: |
+          $art = Get-ChildItem -Recurse -Directory -Filter 'e33-artifacts-*' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $art) { Write-Host 'no artifact dir'; exit 0 }
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e33/e33_integrate.py `
+            --artifacts $art.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e33-artifacts-${{ github.run_id }}
+          path: |
+            docs/powercut/e33/e33-artifacts-*/
+            docs/powercut/e33/e33-report-*.txt
+            docs/powercut/e33/e33-log-*.txt
+            e33-build-info.json
+          if-no-files-found: warn

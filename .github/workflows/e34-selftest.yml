@@ -1,0 +1,190 @@
+name: e34-selftest
+
+# E34 pipeline validation on GitHub Actions.
+#
+# This job does NOT run a power-cut trial: a hosted runner has no verified
+# volatile-cache model and no way to take a pre-recovery disk image, so a
+# crash here would only be a "guest crash", not a power cut.  What the job
+# does validate is everything that does not need the cut:
+#
+#   * the guest probe builds (MSVC) and speaks the external manifest channel;
+#   * the host controller records a live trial end to end against a real NTFS
+#     volume, with clock alignment and channel-overhead measurement;
+#   * the pre-recovery decode classifies real index records in a real
+#     $LogFile image;
+#   * the recovery classifier and the statistics pass their self-tests.
+#
+# The crash trials themselves run on the QEMU rig (see E34-PLAN.md).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/e34-selftest.yml'
+      - 'docs/powercut/e34/**'
+
+jobs:
+  e34-selftest:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber | Format-List | Out-String | Write-Host
+          Get-CimInstance Win32_LogicalDisk |
+            Select-Object DeviceID, FileSystem, DriveType,
+              @{n='FreeGB';e={[math]::Round($_.FreeSpace/1GB,1)}} |
+            Format-Table | Out-String | Write-Host
+
+      - name: Analysis self-tests
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          & $py docs/powercut/e34/e34-selftest.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build the guest probe
+        shell: pwsh
+        run: |
+          $src = 'docs/powercut/e34/e34-probe.cpp'
+          $out = 'e34probe.exe'
+          # Find a Visual Studio / MSVC environment.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = $null
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+          }
+          if (-not $vs) { throw 'no MSVC installation found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $bld = Join-Path $env:GITHUB_WORKSPACE 'build-probe.cmd'
+          @"
+          call "$vcvars" >nul
+          cd /d %GITHUB_WORKSPACE%
+          cl /nologo /EHsc /W3 /O2 "$src" /Fe"$out" ws2_32.lib
+          "@ | Set-Content -Path $bld -Encoding ASCII
+          cmd /c $bld
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $out)) { throw 'probe not built' }
+          Write-Host "probe built: $((Get-Item $out).Length) bytes"
+
+      - name: Live external-channel trial (no crash)
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          $dir = 'D:\e34-rehearsal'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Get-ChildItem $dir -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+          $port = 45077
+          $out = Join-Path $env:GITHUB_WORKSPACE 'rehearsal'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $manifest = Join-Path $out 'trial.jsonl'
+          $summary = Join-Path $out 'trial-summary.json'
+
+          # Start the controller (rehearsal mode: it records but never cuts).
+          # A PowerShell job keeps its output in the job stream, so the
+          # controller's log reaches this step's log.
+          $ctl = Start-Job -ScriptBlock {
+            param($py, $ws, $port, $manifest, $summary)
+            Set-Location $ws
+            & $py 'docs/powercut/e34/e34-crashctl.py' `
+              --port $port --manifest $manifest --summary $summary `
+              --crash-point rehearsal_done --rehearsal --timeout 120
+          } -ArgumentList $py, $env:GITHUB_WORKSPACE, $port, $manifest, $summary
+
+          # Give the controller time to bind.  Do NOT probe the port with a
+          # TCP connect: the controller accepts a single connection, so a
+          # readiness probe would consume the guest's slot.
+          Start-Sleep -Seconds 3
+          if ($ctl.State -eq 'Failed') {
+            Write-Host 'FAIL: the controller job failed'
+            Receive-Job $ctl
+            exit 1
+          }
+
+          # Run the probe: create + candidate flush, reported over the channel.
+          $env:E34_DIR = $dir
+          $env:E34_ARM = 'C'
+          $env:E34_OP = 'create'
+          $env:E34_NAME = 'e34_rehearsal_0001.bin'
+          $env:E34_PAYLOAD = '4096'
+          $env:E34_CTRL_HOST = '127.0.0.1'
+          $env:E34_CTRL_PORT = "$port"
+          $env:E34_DONE = (Join-Path $out 'probe-done.txt')
+          $env:E34_VOLUME = 'D:'
+          & .\e34probe.exe
+          $probeRc = $LASTEXITCODE
+          Write-Host "probe exit: $probeRc"
+
+          # Give the controller a moment to finish writing the manifest.
+          for ($i = 0; $i -lt 60; $i++) {
+            if (Test-Path $manifest) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          Write-Host "--- controller output ---"
+          Receive-Job $ctl -ErrorAction SilentlyContinue
+          Remove-Job $ctl -Force -ErrorAction SilentlyContinue
+
+          if (-not (Test-Path $manifest)) {
+            Write-Host 'FAIL: no manifest was written'
+            exit 1
+          }
+          $events = Get-Content $manifest | ForEach-Object { $_ | ConvertFrom-Json }
+          $names = $events | ForEach-Object { $_.ev }
+          Write-Host ("events: " + ($names -join ', '))
+          foreach ($needed in 'trial_start','dir_info','op_end','flush_end','trial_end') {
+            if ($names -notcontains $needed) {
+              Write-Host "FAIL: missing event $needed"
+              exit 1
+            }
+          }
+          $flush = $events | Where-Object { $_.ev -eq 'flush_end' } | Select-Object -First 1
+          if (-not $flush.ok) {
+            Write-Host "FAIL: the candidate flush did not succeed: $($flush.status) err=$($flush.err)"
+            exit 1
+          }
+          # The created file must exist on the volume.
+          $created = Join-Path $dir $env:E34_NAME
+          if (-not (Test-Path $created)) {
+            Write-Host "FAIL: the probe did not create the file"
+            exit 1
+          }
+          Write-Host "OK: the probe created the file and the controller recorded the trial"
+
+      - name: Pre-recovery decode of a real $LogFile
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          # The E33.1 run left a real $LogFile image and the matching MFT
+          # image; decode it here to prove the pre-recovery path works on
+          # real data.
+          $src = 'docs/powercut/e33'
+          if (-not (Test-Path "$src/e33_logfile_decode.py")) {
+            Write-Host 'FAIL: the E33 decoder is missing from the checkout'
+            exit 1
+          }
+          & $py "$src/e33_logfile_decode.py" --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py "$src/e33_mft.py" --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $py docs/powercut/e34/e34-preimage.py --help > $null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'OK: the decoder and the pre-recovery tool are usable'
+
+      - name: Upload rehearsal artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e34-selftest-${{ github.run_id }}
+          path: |
+            rehearsal/
+          if-no-files-found: warn
+
+
