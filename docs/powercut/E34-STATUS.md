@@ -1,4 +1,4 @@
-# E34 — Status: create/large matrix done (4 x 30); next is E34.1, an immediate crash trigger
+# E34 / E34.1 — Status: create/large matrix done (4 x 30); immediate-trigger chain proved on one trial
 
 **Date:** 2026-11-24
 **Branch:** `e34-ntfs-index-crash-replay`
@@ -70,10 +70,16 @@ the fixed harness (`pe-e34N.iso`).
 * **done**: all four `create`/large cells at 30 trials each (A 30, B 30, C 30,
   F 30 = 120), each with the external manifest, a kept pre-recovery image plus
   its SHA-256, the `$LogFile` decode and the raw-namespace dump;
-* **next (E34.1)**: replace the E34LOG file polling with an immediate trigger
-  driven by the guest's own `flush_end` event, and record the measured
-  API-return-to-kill delay per trial. Until that lands, the flush-arm result
-  means "durable through a cut 0-6 s later", not "durable at API return";
+* **E34.1 (chain proved, 1 trial)**: the guest writes a short `E34CUT` token
+  immediately after the candidate flush returns, to a pre-allocated file at a
+  fixed offset in the E34LOG image; the host watches that offset unbuffered
+  and force-kills QEMU. First validated trial: `B-imm-6`, detect-to-kill
+  **65 ms** (vs 0-6 s with E34LOG polling), pre-recovery `$LogFile` positively
+  identified, Windows replay reported the file present. Scripts:
+  `e34/e34-trigger-watch.py`, `e34/e34-run-immediate.sh`;
+* **not yet established**: that a flush-arm record is durable *at the instant
+  of API return*. That needs the randomised A/B/C batch under this new
+  trigger (next step), not one B trial;
 * **then (E34.2)**: re-run A/B/C with the new trigger, randomised and
   interleaved rather than batched, 30 per arm before deciding on 100;
 * **not run**: arm I, the arm K control, `rename`/`delete`, the small topology,

@@ -189,16 +189,25 @@ static char FindManifestVolume() {
 static HANDLE g_serial = INVALID_HANDLE_VALUE;
 
 static void OpenSerial() {
-  g_serial = CreateFileA("COM1", GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                         0, nullptr);
+  /* serial.sys is present in this WinPE image, but the 16550 may not be up
+   * yet when winpeshl starts us, so retry instead of giving up on the first
+   * attempt (the earlier harness opened once and then silently wrote nowhere
+   * for 120 trials). */
+  for (int i = 0; i < 100; ++i) {
+    g_serial = CreateFileA("COM1", GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                           0, nullptr);
+    if (g_serial != INVALID_HANDLE_VALUE) break;
+    Sleep(100);
+  }
   if (g_serial == INVALID_HANDLE_VALUE) return;
   /* A raw-handle open ships with baud 0; without an explicit DCB the
-   * WriteFile calls fail silently.  9600/8N1 matches QEMU's 16550. */
+   * WriteFile calls fail silently.  115200/8N1 keeps the trigger token's
+   * transmission time in the millisecond range. */
   DCB dcb;
   memset(&dcb, 0, sizeof dcb);
   dcb.DCBlength = sizeof dcb;
   if (GetCommState(g_serial, &dcb)) {
-    dcb.BaudRate = 9600;
+    dcb.BaudRate = 115200;
     dcb.ByteSize = 8;
     dcb.Parity = NOPARITY;
     dcb.StopBits = ONESTOPBIT;
@@ -223,6 +232,12 @@ static void SerialWrite(const char* data, size_t len) {
 /* One JSON line per event.  The controller stores it verbatim. */
 std::string g_event_log;
 
+/* Immediate-crash mode (E34.1).  The serial line is then reserved for the
+ * short trigger token: every extra byte there delays the power cut by its
+ * transmission time, so the full event lines go only to the manifest and to
+ * the TCP channel. */
+bool g_immediate = false;
+
 void Emit(const char* ev, const char* fmt, ...) {
   char body[1024];
   va_list ap;
@@ -241,10 +256,61 @@ void Emit(const char* ev, const char* fmt, ...) {
                    ev, ticks, GetCurrentThreadId(), GetCurrentProcessId(), body);
   if (n <= 0) return;
   g_event_log += line;
-  SerialWrite(line, (size_t)n); /* COM1 channel (the QEMU rig) */
+  if (!g_immediate) {
+    SerialWrite(line, (size_t)n); /* COM1 channel (the QEMU rig) */
+  }
   if (g_sock != INVALID_SOCKET) {
     SendAll(line, (size_t)n);   /* TCP channel (CI rehearsal) */
   }
+}
+
+/* Write the accumulated event log to the E34LOG volume with WRITE_THROUGH so
+ * it is durable before anything tells the host to cut the power. */
+static bool WriteManifest(char lv, const std::string& arm,
+                          const std::string& op, const std::string& name) {
+  if (!lv) return false;
+  char mdir[8] = {lv, ':', '\\', 0};
+  CreateDirectoryA(mdir, nullptr);
+  std::string mpath = std::string(1, lv) + ":\\manifest-" + arm + "-" + op +
+                      "-" + name + ".jsonl";
+  HANDLE mh = CreateFileA(mpath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                          nullptr, CREATE_ALWAYS,
+                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                          nullptr);
+  if (mh == INVALID_HANDLE_VALUE) return false;
+  DWORD w = 0;
+  bool ok = WriteFile(mh, g_event_log.data(),
+                      (DWORD)g_event_log.size(), &w, nullptr) &&
+            w == (DWORD)g_event_log.size();
+  FlushFileBuffers(mh);
+  CloseHandle(mh);
+  return ok;
+}
+
+/* The E34.1 trigger: a file pre-allocated once inside the volume image and
+ * overwritten in place at offset 0 -- no truncation, so the cluster never
+ * moves and the host can poll one fixed byte offset in the image.  The old
+ * E34DONE poll cost 0-6 s; this costs the host's poll interval. */
+static bool WriteTrigger(char lv, const std::string& arm,
+                         const std::string& trial, unsigned long long ticks) {
+  if (!lv) return false;
+  std::string tpath = std::string(1, lv) + ":\\E34TRIG";
+  HANDLE th = CreateFileA(tpath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                          nullptr, OPEN_EXISTING,
+                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                          nullptr);
+  if (th == INVALID_HANDLE_VALUE) return false;
+  char buf[51];
+  memset(buf, ' ', sizeof buf);
+  int n = snprintf(buf, sizeof buf, "E34CUT,%s,%s,%llu", arm.c_str(),
+                   trial.c_str(), ticks);
+  if (n < 0) n = 0;
+  if (n > (int)sizeof buf) n = (int)sizeof buf;
+  DWORD w = 0;
+  bool ok = WriteFile(th, buf, (DWORD)n, &w, nullptr) && w == (DWORD)n;
+  FlushFileBuffers(th);
+  CloseHandle(th);
+  return ok;
 }
 
 std::string WideToUtf8(const wchar_t* w) {
@@ -438,6 +504,7 @@ int main() {
   std::string sb_topo = SmbiosField("TOPO=");
   std::string sb_trial = SmbiosField("TRIAL=");
   std::string sb_mode = SmbiosField("MODE=");
+  g_immediate = (sb_mode == "immediate");
   if (!sb_arm.empty()) arm = sb_arm;
   if (!sb_op.empty()) op = sb_op;
   if (arm.empty()) arm = "A";
@@ -561,6 +628,18 @@ int main() {
           CloseHandle(dh);
         }
       }
+      /* E34.1: the recovery guest uses the same fixed-offset trigger so the
+       * host can stop it deterministically once the listing is recorded.
+       * Unconditional: MODE=recover means g_immediate is false, but the
+       * runner still uses the trigger watcher for this phase. */
+      {
+        FILETIME rf;
+        GetSystemTimePreciseAsFileTime(&rf);
+        unsigned long long rticks =
+            ((unsigned long long)rf.dwHighDateTime << 32) | rf.dwLowDateTime;
+        WriteTrigger(FindManifestVolume(), arm,
+                     sb_trial.empty() ? std::string("R") : sb_trial, rticks);
+      }
       Emit("E34DONE", "\"arm\":\"%s\",\"op\":\"%s\"", arm.c_str(),
            op.c_str());
     }
@@ -614,7 +693,8 @@ int main() {
        * and arm B is defined as FlushFileBuffers(target file).  An
        * unconditional file-level flush would make arm A identical to arm B. */
       std::string ident = FileIdentity(h);
-      Emit("op_end", "\"op\":\"create\",\"status\":\"ok\",%s", ident.c_str());
+      Emit("op_end", "\"op\":\"create\",\"status\":\"ok\",%s,\"final_name\":\"%s\"",
+           ident.c_str(), JsonEscape(final_name).c_str());
       Emit("flush_start", "\"arm\":\"%s\"", arm.c_str());
       std::string st = CandidateFlush(arm, wdir, h);
       Emit("flush_end", "\"arm\":\"%s\",%s", arm.c_str(), st.c_str());
@@ -637,7 +717,8 @@ int main() {
     } else {
       /* The handle opened before the rename still refers to the file. */
       std::string ident = FileIdentity(src);
-      Emit("op_end", "\"op\":\"rename\",\"status\":\"ok\",%s", ident.c_str());
+      Emit("op_end", "\"op\":\"rename\",\"status\":\"ok\",%s,\"final_name\":\"%s\"",
+           ident.c_str(), JsonEscape(final_name).c_str());
       Emit("flush_start", "\"arm\":\"%s\"", arm.c_str());
       std::string st = CandidateFlush(arm, wdir, src);
       Emit("flush_end", "\"arm\":\"%s\",%s", arm.c_str(), st.c_str());
@@ -654,7 +735,8 @@ int main() {
            op_status.c_str(), op_err);
     } else {
       std::string ident = FileIdentity(target);
-      Emit("op_end", "\"op\":\"delete\",\"status\":\"ok\",%s", ident.c_str());
+      Emit("op_end", "\"op\":\"delete\",\"status\":\"ok\",%s,\"final_name\":\"%s\"",
+           ident.c_str(), JsonEscape(final_name).c_str());
       Emit("flush_start", "\"arm\":\"%s\"", arm.c_str());
       std::string st = CandidateFlush(arm, wdir, target);
       Emit("flush_end", "\"arm\":\"%s\",%s", arm.c_str(), st.c_str());
@@ -663,6 +745,36 @@ int main() {
   } else {
     op_status = "unknown-op";
     Emit("op_end", "\"op\":\"%s\",\"status\":\"unknown-op\"", op.c_str());
+  }
+
+  /* E34.1: cut the power the moment the candidate API has returned.  The
+   * manifest (complete through flush_end) is made durable first, then the
+   * fixed-offset trigger is dirtied; the host polls that offset in the volume
+   * image and force-kills QEMU.  Nothing else runs in the guest afterwards. */
+  if (g_immediate) {
+    char lv = FindManifestVolume();
+    std::string trial = sb_trial.empty() ? std::string("1") : sb_trial;
+    bool mok = WriteManifest(lv, arm, op, name);
+    FILETIME cft;
+    GetSystemTimePreciseAsFileTime(&cft);
+    unsigned long long cticks =
+        ((unsigned long long)cft.dwHighDateTime << 32) | cft.dwLowDateTime;
+    bool tok_ok = WriteTrigger(lv, arm, trial, cticks);
+    /* Optional faster path: a short token on COM1.  If the serial port is
+     * dead this writes nowhere and the fixed-offset trigger still works. */
+    char tok[64];
+    int tn = snprintf(tok, sizeof tok, "E34CUT,%s,%s\n", arm.c_str(),
+                      trial.c_str());
+    if (tn > 0) SerialWrite(tok, (size_t)tn);
+    if (!mok || !tok_ok) {
+      Emit("fatal", "\"reason\":\"immediate trigger failed\",\"manifest\":%s,"
+           "\"trigger\":%s", mok ? "true" : "false",
+           tok_ok ? "true" : "false");
+    }
+    WaitForCrash(600);
+    closesocket(g_sock);
+    WSACleanup();
+    return 0;
   }
 
   Emit("trial_end",
